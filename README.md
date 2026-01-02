@@ -2,6 +2,17 @@
 
 Interactive shell scripts for deploying and managing Proxmox LXC container-based security testing labs. These scripts automate the creation of realistic network environments with simulated traffic patterns for testing security solutions like Zscaler, CASB, DLP, and UEBA systems.
 
+## Lab Architecture
+
+**Important:** This lab was developed with a specific network topology in mind:
+
+- **Router Configuration:** The lab router has existing IPsec/GRE tunnels to two separate Zscaler data centers
+- **Location Simulation:** HQ and Branch subnets are treated as separate physical locations in Zscaler
+- **DNS Resolution:** DNS for both subnets is handled by Zscaler Trusted Resolver, specified to containers via DHCP
+- **Traffic Flow:** All container traffic egresses through the Zscaler cloud via the appropriate tunnel
+
+This architecture allows realistic simulation of a multi-site enterprise environment with cloud security controls.
+
 ## Overview
 
 This collection provides a complete workflow for building a multi-container lab environment that generates realistic web traffic patterns mimicking real-world enterprise scenarios.
@@ -119,7 +130,7 @@ Manages container startup with intelligent status tracking.
 ## Quick Start
 
 ### Prerequisites
-- Proxmox VE 7.0 or later
+- Proxmox VE 8.x or higher
 - Root or sudo access
 - Network bridge configured (default: vmbr0)
 - Local storage available (local-lvm or local-zfs)
