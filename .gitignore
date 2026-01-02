@@ -1,0 +1,34 @@
+# MacOS
+.DS_Store
+._*
+
+# Editor/IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Backup files
+*.bak
+*.backup
+*~
+
+# Logs
+*.log
+logs/
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+
+# Local configuration overrides
+local.conf
+*.local
+
+# SSH keys or sensitive data
+*.pem
+*.key
+id_rsa*
+*.crt
