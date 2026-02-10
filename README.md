@@ -2,6 +2,8 @@
 
 Interactive shell scripts for deploying and managing Proxmox LXC container-based security testing labs. These scripts automate the creation of realistic network environments with simulated traffic patterns for testing security solutions like Zscaler, CASB, DLP, and UEBA systems.
 
+The recommended entry point is the consolidated tool `proxmox-lab.sh`, which combines all scripts into a single interactive menu. The individual scripts are retained and continue to work independently.
+
 ## Lab Architecture
 
 **Important:** This lab was developed with a specific network topology in mind:
@@ -25,6 +27,42 @@ This collection provides a complete workflow for building a multi-container lab 
 - **Simulates security events** (DLP triggers, malware downloads, policy violations, UEBA anomalies)
 
 ## Scripts
+
+### `proxmox-lab.sh` — Consolidated Tool (Recommended)
+
+A single interactive menu that combines all four scripts into one tool.
+
+**Menu options:**
+1. **Create Template** — create an Alpine LXC template
+2. **Deploy Containers** — clone and configure lab containers
+3. **Start Containers** — start stopped containers with status tracking
+4. **Install Traffic Generator** — push traffic profiles to containers
+5. **Show Status** — view all containers with running state and traffic gen status at a glance
+6. **Full Setup Wizard** — runs steps 1 → 2 → 3 → 4 in sequence
+7. **Exit**
+
+**Interactive menu:**
+```bash
+./proxmox-lab.sh
+```
+
+**Direct command invocation** (useful for scripting or re-running a single step):
+```bash
+./proxmox-lab.sh create-template
+./proxmox-lab.sh deploy
+./proxmox-lab.sh start
+./proxmox-lab.sh install-traffic
+./proxmox-lab.sh status
+./proxmox-lab.sh wizard
+```
+
+---
+
+### Individual Scripts
+
+The four original scripts remain fully functional and can be used independently if preferred.
+
+---
 
 ### 1. `create-template.sh`
 Creates a base Alpine Linux LXC template with traffic generation framework.
@@ -135,7 +173,24 @@ Manages container startup with intelligent status tracking.
 - Network bridge configured (default: vmbr0)
 - Local storage available (local-lvm or local-zfs)
 
-### Installation Workflow
+### Option A — Consolidated Tool (Recommended)
+
+Run the unified script and use the interactive menu, or jump straight to the full wizard:
+
+```bash
+./proxmox-lab.sh wizard
+```
+
+The wizard walks through all four steps in sequence, prompting for input at each stage.
+
+To run the menu instead:
+```bash
+./proxmox-lab.sh
+```
+
+### Option B — Individual Scripts
+
+Each step can be run separately using the original scripts:
 
 1. **Create the template:**
    ```bash
@@ -232,23 +287,26 @@ pct exec 200 -- /opt/traffic-gen/traffic-gen.sh fileserver
 ## Customization
 
 ### Custom CTID Ranges
-All scripts support custom CTID ranges:
+All scripts support custom CTID ranges. Using the consolidated tool:
 ```bash
-# Deploy HQ starting at CTID 300
+./proxmox-lab.sh deploy
+# Select HQ only, enter 300 as starting CTID
+```
+Or with the individual script:
+```bash
 ./deploy-container.sh
 # Select HQ only, enter 300 as starting CTID
 ```
 
 ### Custom Traffic Intensity
 ```bash
-./install-traffic-gen.sh
-# Select "Custom" intensity
-# Enter custom cron schedules
+./proxmox-lab.sh install-traffic
+# Select "Custom" intensity, enter cron schedules
 ```
 
 ### Custom Profile Assignment
 ```bash
-./install-traffic-gen.sh
+./proxmox-lab.sh install-traffic
 # Select "Custom selection"
 # Example: 300:fileserver,301:webapp,320:developer
 ```
