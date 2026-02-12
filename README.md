@@ -39,7 +39,8 @@ A single interactive menu that combines all four scripts into one tool.
 4. **Install Traffic Generator** — push traffic profiles to containers
 5. **Show Status** — view all containers with running state and traffic gen status at a glance
 6. **Full Setup Wizard** — runs steps 1 → 2 → 3 → 4 in sequence
-7. **Exit**
+7. **Update** — check GitHub for a newer version, show changelog, and self-patch the script in place
+8. **Exit**
 
 **Interactive menu:**
 ```bash
@@ -54,6 +55,7 @@ A single interactive menu that combines all four scripts into one tool.
 ./proxmox-lab.sh install-traffic
 ./proxmox-lab.sh status
 ./proxmox-lab.sh wizard
+./proxmox-lab.sh update
 ```
 
 ---

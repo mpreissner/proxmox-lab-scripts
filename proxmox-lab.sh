@@ -83,6 +83,11 @@ pick_storage() {
   esac
 }
 
+version_gt() {
+  # Returns 0 (true) if $1 > $2 using version sort
+  test "$(printf '%s\n' "$1" "$2" | sort -V | head -n1)" != "$1"
+}
+
 # ============================================================
 # MODULE: Create Template
 # ============================================================
@@ -1565,6 +1570,85 @@ cmd_full_wizard() {
 }
 
 # ============================================================
+# MODULE: Update
+# ============================================================
+
+cmd_update() {
+  section_header "Update proxmox-lab.sh"
+
+  REMOTE_RAW="https://raw.githubusercontent.com/mpreissner/proxmox-lab-scripts/master/proxmox-lab.sh"
+  CHANGELOG_RAW="https://raw.githubusercontent.com/mpreissner/proxmox-lab-scripts/master/CHANGELOG.md"
+
+  echo "Checking for updates..."
+  remote_script=$(curl -fsSL --connect-timeout 10 "$REMOTE_RAW") || {
+    echo -e "${RED}Error: Could not reach GitHub. Check network connectivity.${NC}"
+    return 1
+  }
+
+  REMOTE_VERSION=$(echo "$remote_script" | grep '^VERSION=' | head -1 | cut -d'"' -f2)
+
+  if [ -z "$REMOTE_VERSION" ]; then
+    echo -e "${RED}Error: Could not determine remote version.${NC}"
+    return 1
+  fi
+
+  if [ "$REMOTE_VERSION" = "$VERSION" ]; then
+    echo -e "${GREEN}Already up to date (v${VERSION})${NC}"
+    return 0
+  fi
+
+  if ! version_gt "$REMOTE_VERSION" "$VERSION"; then
+    echo -e "${YELLOW}Warning: Remote version (v${REMOTE_VERSION}) is older than local (v${VERSION}). No update needed.${NC}"
+    return 0
+  fi
+
+  echo ""
+  echo -e "${CYAN}Update available: v${VERSION} → v${REMOTE_VERSION}${NC}"
+  echo ""
+
+  remote_changelog=$(curl -fsSL --connect-timeout 10 "$CHANGELOG_RAW") || true
+
+  if [ -n "$remote_changelog" ]; then
+    changelog_section=$(echo "$remote_changelog" | awk \
+      "/^## \[${REMOTE_VERSION}\]/{found=1; next} found && /^## \[/{exit} found{print}")
+    if [ -n "$changelog_section" ]; then
+      echo "  What's new in v${REMOTE_VERSION}:"
+      echo "$changelog_section" | while IFS= read -r line; do
+        echo "  $line"
+      done
+      echo ""
+    fi
+  fi
+
+  read -p "Update proxmox-lab.sh? [y/N]: " confirm
+
+  if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
+    echo "Update cancelled."
+    return 0
+  fi
+
+  SCRIPT_PATH="$(realpath "$0")"
+  TEMP=$(mktemp /tmp/proxmox-lab-update.XXXXXX)
+
+  echo "$remote_script" > "$TEMP"
+
+  bash -n "$TEMP" || {
+    echo -e "${RED}Downloaded script failed syntax check. Aborting.${NC}"
+    rm -f "$TEMP"
+    return 1
+  }
+
+  cp "$TEMP" "$SCRIPT_PATH"
+  chmod +x "$SCRIPT_PATH"
+  rm -f "$TEMP"
+
+  echo -e "${GREEN}✓ Updated to v${REMOTE_VERSION}${NC}"
+  echo ""
+  echo "Script updated. Re-launch proxmox-lab.sh for the new version."
+  echo "To push updated traffic profiles to containers, use option 4 (Install Traffic Generator)."
+}
+
+# ============================================================
 # MAIN MENU
 # ============================================================
 
@@ -1581,9 +1665,10 @@ main_menu() {
     echo "  4) Install Traffic Generator"
     echo "  5) Show Status"
     echo "  6) Full Setup Wizard  (steps 1 → 2 → 3 → 4)"
-    echo "  7) Exit"
+    echo "  7) Update"
+    echo "  8) Exit"
     echo ""
-    read -p "Select option [1-7]: " choice
+    read -p "Select option [1-8]: " choice
 
     case "$choice" in
       1) ( cmd_create_template ) || echo -e "${RED}Operation failed or was aborted.${NC}" ;;
@@ -1592,12 +1677,13 @@ main_menu() {
       4) ( cmd_install_traffic_gen ) || echo -e "${RED}Operation failed or was aborted.${NC}" ;;
       5) ( cmd_show_status ) || echo -e "${RED}Operation failed or was aborted.${NC}" ;;
       6) ( cmd_full_wizard ) || echo -e "${RED}Wizard failed or was aborted.${NC}" ;;
-      7|q|Q)
+      7) ( cmd_update ) || echo -e "${RED}Operation failed or was aborted.${NC}" ;;
+      8|q|Q)
         echo "Goodbye!"
         exit 0
         ;;
       *)
-        echo -e "${RED}Invalid option. Please select 1-7.${NC}"
+        echo -e "${RED}Invalid option. Please select 1-8.${NC}"
         ;;
     esac
   done
@@ -1615,6 +1701,7 @@ case "${1:-}" in
   install-traffic)  cmd_install_traffic_gen ;;
   status)           cmd_show_status ;;
   wizard)           cmd_full_wizard ;;
+  update)           cmd_update ;;
   --version|-v)     echo "proxmox-lab.sh v${VERSION}" ;;
   "")               main_menu ;;
   *)
@@ -1629,6 +1716,7 @@ case "${1:-}" in
     echo "  install-traffic    Install traffic generators"
     echo "  status             Show container status"
     echo "  wizard             Full setup wizard"
+    echo "  update             Check for updates and self-patch"
     echo "  --version          Show version"
     echo ""
     echo "Run without arguments for the interactive menu."
