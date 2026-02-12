@@ -1707,8 +1707,8 @@ cmd_full_wizard() {
 cmd_update() {
   section_header "Update proxmox-lab.sh"
 
-  REMOTE_RAW="https://raw.githubusercontent.com/mpreissner/proxmox-lab-scripts/master/proxmox-lab.sh"
-  CHANGELOG_RAW="https://raw.githubusercontent.com/mpreissner/proxmox-lab-scripts/master/CHANGELOG.md"
+  REMOTE_RAW="https://raw.githubusercontent.com/mpreissner/proxmox-lab-scripts/main/proxmox-lab.sh"
+  CHANGELOG_RAW="https://raw.githubusercontent.com/mpreissner/proxmox-lab-scripts/main/CHANGELOG.md"
 
   echo "Checking for updates..."
   remote_script=$(curl -fsSL --connect-timeout 10 "$REMOTE_RAW") || {
