@@ -835,7 +835,7 @@ browse_random() {
   local domain_file="$1"
   local count=${2:-1}
 
-  if [ ! -file "$domain_file" ]; then
+  if [ ! -f "$domain_file" ]; then
     return
   fi
 
@@ -1015,10 +1015,35 @@ EOF
       ;;
 
     office-worker)
+      pct exec $ctid -- bash -c 'cat > /opt/traffic-gen/domains/office-worker.txt' <<'EOF'
+https://outlook.office365.com
+https://teams.microsoft.com
+https://sharepoint.com
+https://docs.google.com
+https://drive.google.com
+https://www.salesforce.com
+https://slack.com
+https://zoom.us
+https://www.linkedin.com
+https://www.cnn.com
+https://www.bbc.com
+https://www.npr.org
+https://www.nytimes.com
+https://weather.com
+https://www.amazon.com
+https://www.reddit.com
+https://www.espn.com
+https://www.indeed.com
+https://www.bankofamerica.com
+https://www.chase.com
+EOF
+
       pct exec $ctid -- bash -c 'cat > /opt/traffic-gen/profiles/office-worker.sh' <<'EOF'
 #!/bin/bash
 source /opt/traffic-gen/utils/business-hours.sh
 source /opt/traffic-gen/utils/random-timing.sh
+
+DOMAINS=/opt/traffic-gen/domains/office-worker.txt
 
 if ! is_business_hours; then
   # Minimal after-hours activity
@@ -1037,8 +1062,7 @@ echo "[$(date)] Office worker: Business hours activity (Hour: $HOUR)"
 if [ $HOUR -ge 8 ] && [ $HOUR -lt 10 ]; then
   curl -s https://outlook.office365.com > /dev/null 2>&1
   sleep $(random_delay 5 15)
-  curl -s https://www.cnn.com > /dev/null 2>&1
-  curl -s https://www.bbc.com > /dev/null 2>&1
+  browse_random "$DOMAINS" 2
 
 # Lunch time (12-1pm) - personal browsing
 elif is_lunch_time; then
@@ -1048,6 +1072,7 @@ elif is_lunch_time; then
   # Try social media (will be blocked)
   curl -s https://www.facebook.com > /dev/null 2>&1 || true
   curl -s https://www.youtube.com > /dev/null 2>&1
+  browse_random "$DOMAINS" 3
 
 # Regular work hours
 else
@@ -1058,6 +1083,7 @@ else
 
   # Document collaboration
   curl -s https://docs.google.com > /dev/null 2>&1
+  browse_random "$DOMAINS" 2
 
   # Random policy violation (10% chance)
   if [ $((RANDOM % 10)) -eq 0 ]; then
@@ -1137,16 +1163,42 @@ EOF
       ;;
 
     executive)
+      pct exec $ctid -- bash -c 'cat > /opt/traffic-gen/domains/executive.txt' <<'EOF'
+https://www.wsj.com
+https://www.bloomberg.com
+https://www.ft.com
+https://www.reuters.com
+https://www.cnbc.com
+https://www.businessinsider.com
+https://hbr.org
+https://www.economist.com
+https://www.forbes.com
+https://www.linkedin.com
+https://zoom.us
+https://teams.microsoft.com
+https://outlook.office365.com
+https://www.united.com
+https://www.delta.com
+https://www.marriott.com
+https://www.hilton.com
+https://www.amextravel.com
+https://www.apple.com
+https://www.salesforce.com
+EOF
+
       pct exec $ctid -- bash -c 'cat > /opt/traffic-gen/profiles/executive.sh' <<'EOF'
 #!/bin/bash
 source /opt/traffic-gen/utils/business-hours.sh
 source /opt/traffic-gen/utils/random-timing.sh
+
+DOMAINS=/opt/traffic-gen/domains/executive.txt
 
 if ! is_business_hours; then
   # Execs check email at odd hours (UEBA trigger)
   if [ $((RANDOM % 2)) -eq 0 ]; then
     echo "[$(date)] Executive: After-hours email (UEBA target)"
     curl -s https://outlook.office365.com > /dev/null 2>&1
+    browse_random "$DOMAINS" 1
   fi
   exit 0
 fi
@@ -1157,9 +1209,10 @@ echo "[$(date)] Executive: Light usage pattern"
 curl -s https://outlook.office365.com > /dev/null 2>&1
 sleep $(random_delay 15 45)
 
-# News sites
+# Business news and intel
 curl -s https://www.wsj.com > /dev/null 2>&1
 curl -s https://www.bloomberg.com > /dev/null 2>&1
+browse_random "$DOMAINS" 3
 
 # Video conferencing
 curl -s https://zoom.us > /dev/null 2>&1
@@ -1182,7 +1235,7 @@ cmd_install_traffic_gen() {
   echo -e "${BLUE}1. Container Selection${NC}"
   echo "Detecting running containers..."
 
-  RUNNING_CONTAINERS=$(pct list | awk 'NR>1 {print $1}' | sort -n)
+  RUNNING_CONTAINERS=$(pct list 2>/dev/null | awk 'NR>1 && $2=="running" {print $1}' | sort -n)
 
   if [ -z "$RUNNING_CONTAINERS" ]; then
     echo -e "${RED}No running containers found!${NC}"

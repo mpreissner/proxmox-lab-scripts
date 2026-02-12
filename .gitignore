@@ -32,3 +32,6 @@ local.conf
 *.key
 id_rsa*
 *.crt
+
+# AI assist
+.claude
