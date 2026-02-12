@@ -13,7 +13,7 @@ YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 CYAN='\033[0;36m'
 NC='\033[0m'
-VERSION="1.1.0"
+VERSION="1.1.1"
 
 CONFIG_FILE="${HOME}/.proxmox-lab.conf"
 if [ -f "$CONFIG_FILE" ]; then
@@ -1697,7 +1697,7 @@ cmd_full_wizard() {
   echo ""
   save_config
   echo ""
-  echo "Run with 'status' or choose option 5 to check the current state."
+  echo "Run with 'status' or choose option 6 to check the current state."
 }
 
 # ============================================================
@@ -1776,7 +1776,7 @@ cmd_update() {
   echo -e "${GREEN}✓ Updated to v${REMOTE_VERSION}${NC}"
   echo ""
   echo "Script updated. Re-launch proxmox-lab.sh for the new version."
-  echo "To push updated traffic profiles to containers, use option 5 (Install Traffic Generator)."
+  echo "To push updated traffic profiles to containers, use option 4 (Install Traffic Generator)."
 }
 
 cmd_system_cleanup() {
@@ -1897,8 +1897,8 @@ main_menu() {
     echo "  1) Create Template"
     echo "  2) Deploy Containers"
     echo "  3) Start Containers"
-    echo "  4) Stop Containers"
-    echo "  5) Install Traffic Generator"
+    echo "  4) Install Traffic Generator"
+    echo "  5) Stop Containers"
     echo "  6) Show Status"
     echo "  7) Full Setup Wizard  (steps 1 → 2 → 3 → 4)"
     echo "  8) Update"
@@ -1910,8 +1910,8 @@ main_menu() {
       1) ( cmd_create_template ) || echo -e "${RED}Operation failed or was aborted.${NC}" ;;
       2) ( cmd_deploy_containers ) || echo -e "${RED}Operation failed or was aborted.${NC}" ;;
       3) ( cmd_start_containers ) || echo -e "${RED}Operation failed or was aborted.${NC}" ;;
-      4) ( cmd_stop_containers ) || echo -e "${RED}Operation failed or was aborted.${NC}" ;;
-      5) ( cmd_install_traffic_gen ) || echo -e "${RED}Operation failed or was aborted.${NC}" ;;
+      4) ( cmd_install_traffic_gen ) || echo -e "${RED}Operation failed or was aborted.${NC}" ;;
+      5) ( cmd_stop_containers ) || echo -e "${RED}Operation failed or was aborted.${NC}" ;;
       6) ( cmd_show_status ) || echo -e "${RED}Operation failed or was aborted.${NC}" ;;
       7) ( cmd_full_wizard ) || echo -e "${RED}Wizard failed or was aborted.${NC}" ;;
       8) ( cmd_update ) || echo -e "${RED}Operation failed or was aborted.${NC}" ;;

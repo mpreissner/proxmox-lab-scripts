@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.1.1] - 2026-02-12
+
+### Fixed
+- Menu options 4 and 5 were swapped: Install Traffic Generator moved to option 4, Stop Containers moved to option 5, so the Full Setup Wizard's "steps 1 → 2 → 3 → 4" reference is accurate
+
 ## [1.1.0] - 2026-02-12
 
 ### Added
@@ -41,6 +46,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `browse_random()` invalid test operator (`-file` → `-f`) in `random-timing.sh`
 - `RUNNING_CONTAINERS` in `cmd_install_traffic_gen` now correctly filters to running containers only (`pct list` filtered by status field)
 
-[Unreleased]: https://github.com/mpreissner/proxmox-lab-scripts/compare/v1.1.0...HEAD
+[Unreleased]: https://github.com/mpreissner/proxmox-lab-scripts/compare/v1.1.1...HEAD
+[1.1.1]: https://github.com/mpreissner/proxmox-lab-scripts/compare/v1.1.0...v1.1.1
 [1.1.0]: https://github.com/mpreissner/proxmox-lab-scripts/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/mpreissner/proxmox-lab-scripts/releases/tag/v1.0.0
