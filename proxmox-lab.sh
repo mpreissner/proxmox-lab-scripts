@@ -15,6 +15,12 @@ CYAN='\033[0;36m'
 NC='\033[0m'
 VERSION="1.0.0"
 
+CONFIG_FILE="${HOME}/.proxmox-lab.conf"
+if [ -f "$CONFIG_FILE" ]; then
+  bash -n "$CONFIG_FILE" 2>/dev/null && source "$CONFIG_FILE" || \
+    echo -e "${YELLOW}Warning: ~/.proxmox-lab.conf has errors, using defaults${NC}"
+fi
+
 read_with_default() {
   local prompt="$1"
   local default="$2"
@@ -61,8 +67,43 @@ section_header() {
   echo ""
 }
 
+WIZARD_MODE=false
+
+save_config() {
+  cat > "$CONFIG_FILE" <<EOF
+# proxmox-lab configuration — saved $(date)
+NODE="${NODE:-}"
+BRIDGE="${BRIDGE:-vmbr0}"
+STORAGE="${STORAGE:-local-lvm}"
+VLAN_HQ="${VLAN_HQ:-200}"
+VLAN_BRANCH="${VLAN_BRANCH:-201}"
+HQ_START="${HQ_START:-200}"
+BRANCH_START="${BRANCH_START:-220}"
+TEMPLATE_ID="${TEMPLATE_ID:-}"
+MEMORY="${MEMORY:-256}"
+CORES="${CORES:-1}"
+CRON_SERVER="${CRON_SERVER:-*/15 * * * *}"
+CRON_OFFICE="${CRON_OFFICE:-*/5 8-18 * * 1-5}"
+EOF
+  echo -e "${GREEN}✓ Settings saved to ~/.proxmox-lab.conf${NC}"
+}
+
+_maybe_save_config() {
+  $WIZARD_MODE && return 0
+  echo ""
+  read -p "Save these settings as defaults? [Y/n]: " save_choice
+  if [[ ! "$save_choice" =~ ^[Nn]$ ]]; then
+    save_config
+  fi
+}
+
 pick_storage() {
   # Sets STORAGE variable based on user selection
+  if [ -n "${STORAGE:-}" ]; then
+    echo "  Using saved storage: ${STORAGE}"
+    read -p "  Change storage? [y/N]: " chg
+    [[ "$chg" =~ ^[Yy]$ ]] || return 0
+  fi
   echo "Common local storage options:"
   echo "  1) local-lvm"
   echo "  2) local-zfs"
@@ -117,7 +158,9 @@ cmd_create_template() {
   echo -e "${BLUE}2. Proxmox Node${NC}"
   echo "Available nodes:"
   pvesh get /nodes --output-format json | jq -r '.[].node' 2>/dev/null || echo "  (Unable to detect nodes)"
-  read -p "Node name: " NODE
+  [ -n "${NODE:-}" ] && echo "  Last used: ${NODE}"
+  read -p "Node name [${NODE:-}]: " input
+  NODE="${input:-${NODE:-}}"
   while [ -z "$NODE" ]; do
     echo -e "${RED}Node name is required${NC}"
     read -p "Node name: " NODE
@@ -147,13 +190,13 @@ cmd_create_template() {
   # 5. Resources
   echo ""
   echo -e "${BLUE}5. Resource Allocation${NC}"
-  read_with_default "Memory (MB)" "256" "MEMORY"
-  read_with_default "CPU Cores" "1" "CORES"
+  read_with_default "Memory (MB)" "${MEMORY:-256}" "MEMORY"
+  read_with_default "CPU Cores" "${CORES:-1}" "CORES"
 
   # 6. Network
   echo ""
   echo -e "${BLUE}6. Network Configuration${NC}"
-  read_with_default "Bridge" "vmbr0" "BRIDGE"
+  read_with_default "Bridge" "${BRIDGE:-vmbr0}" "BRIDGE"
 
   # Summary
   section_header "Configuration Summary"
@@ -210,7 +253,7 @@ cmd_create_template() {
     rc-update add dcron default
 
     # Create traffic-gen directory structure
-    mkdir -p /opt/traffic-gen/{profiles,domains,utils}
+    mkdir -p /opt/traffic-gen/profiles /opt/traffic-gen/domains /opt/traffic-gen/utils
 
     echo 'Template configuration complete'
   "
@@ -225,6 +268,7 @@ cmd_create_template() {
   echo -e "==========================================${NC}"
   echo ""
   echo "Next step: Deploy containers (option 2 from main menu)"
+  _maybe_save_config
 }
 
 # ============================================================
@@ -244,8 +288,10 @@ cmd_deploy_containers() {
   fi
   echo ""
 
+  [ -n "${TEMPLATE_ID:-}" ] && echo "  Last used: ${TEMPLATE_ID}"
   while true; do
-    read -p "Template ID to clone from: " TEMPLATE_ID
+    read -p "Template ID to clone from [${TEMPLATE_ID:-}]: " input
+    TEMPLATE_ID="${input:-${TEMPLATE_ID:-}}"
     if [[ "$TEMPLATE_ID" =~ ^[0-9]+$ ]]; then
       if pct status $TEMPLATE_ID &>/dev/null; then
         if pct config $TEMPLATE_ID | grep -q "template: 1"; then
@@ -269,7 +315,7 @@ cmd_deploy_containers() {
   # 3. Network
   echo ""
   echo -e "${BLUE}3. Network Configuration${NC}"
-  read_with_default "Bridge" "vmbr0" "BRIDGE"
+  read_with_default "Bridge" "${BRIDGE:-vmbr0}" "BRIDGE"
 
   # 4. Deployment Scope
   echo ""
@@ -294,8 +340,8 @@ cmd_deploy_containers() {
   if $DEPLOY_HQ; then
     echo ""
     echo -e "${BLUE}5. HQ ServerNet Configuration${NC}"
-    read_with_default "Starting CTID for HQ" "200" "HQ_START"
-    read_with_default "HQ VLAN tag" "200" "VLAN_HQ"
+    read_with_default "Starting CTID for HQ" "${HQ_START:-200}" "HQ_START"
+    read_with_default "HQ VLAN tag" "${VLAN_HQ:-200}" "VLAN_HQ"
 
     echo -e "${CYAN}HQ containers will be:${NC}"
     echo "  CT ${HQ_START}: hq-fileserver"
@@ -314,8 +360,8 @@ cmd_deploy_containers() {
     else
       echo -e "${BLUE}5. Branch UserNet Configuration${NC}"
     fi
-    read_with_default "Starting CTID for Branch" "220" "BRANCH_START"
-    read_with_default "Branch VLAN tag" "201" "VLAN_BRANCH"
+    read_with_default "Starting CTID for Branch" "${BRANCH_START:-220}" "BRANCH_START"
+    read_with_default "Branch VLAN tag" "${VLAN_BRANCH:-201}" "VLAN_BRANCH"
 
     echo -e "${CYAN}Branch containers will be:${NC}"
     echo "  CT ${BRANCH_START}: branch-worker1"
@@ -404,6 +450,7 @@ cmd_deploy_containers() {
       fi
 
       pct set $CTID --onboot 1
+      pct set $CTID --tags lab-managed
       echo -e "${GREEN}✓ CT ${CTID} (${HOSTNAME}) created${NC}"
     done
   fi
@@ -440,6 +487,7 @@ cmd_deploy_containers() {
       fi
 
       pct set $CTID --onboot 1
+      pct set $CTID --tags lab-managed
       echo -e "${GREEN}✓ CT ${CTID} (${HOSTNAME}) created${NC}"
     done
   fi
@@ -466,6 +514,7 @@ cmd_deploy_containers() {
 
   echo ""
   echo "Next steps: Start containers (option 3), then install traffic gen (option 4)"
+  _maybe_save_config
 }
 
 # ============================================================
@@ -493,6 +542,7 @@ cmd_start_containers() {
   declare -a RUNNING_CONTAINERS=()
 
   for CTID in $ALL_CONTAINERS; do
+    pct config $CTID 2>/dev/null | grep -q "tags:.*lab-managed" || continue
     STATUS=$(get_status $CTID)
     HOSTNAME=$(get_hostname $CTID)
 
@@ -533,7 +583,7 @@ cmd_start_containers() {
       ;;
 
     2)
-      read_with_default "HQ starting CTID" "200" "HQ_START"
+      read_with_default "HQ starting CTID" "${HQ_START:-200}" "HQ_START"
       HQ_END=$((HQ_START + 5))
       echo "Checking HQ containers (${HQ_START}-${HQ_END})..."
       for ctid in $(seq $HQ_START $HQ_END); do
@@ -550,7 +600,7 @@ cmd_start_containers() {
       ;;
 
     3)
-      read_with_default "Branch starting CTID" "220" "BRANCH_START"
+      read_with_default "Branch starting CTID" "${BRANCH_START:-220}" "BRANCH_START"
       BRANCH_END=$((BRANCH_START + 4))
       echo "Checking Branch containers (${BRANCH_START}-${BRANCH_END})..."
       for ctid in $(seq $BRANCH_START $BRANCH_END); do
@@ -707,10 +757,10 @@ cmd_start_containers() {
 
     if [ "$STATUS" = "running" ]; then
       printf "%-8s %-20s ${GREEN}%-12s${NC}\n" "$CTID" "$HOSTNAME" "Running"
-      ((SUCCESS_COUNT++))
+      ((++SUCCESS_COUNT))
     else
       printf "%-8s %-20s ${RED}%-12s${NC}\n" "$CTID" "$HOSTNAME" "Failed"
-      ((FAILED_COUNT++))
+      ((++FAILED_COUNT))
     fi
   done
 
@@ -732,6 +782,80 @@ cmd_start_containers() {
     echo ""
     echo "Example - view traffic logs:"
     echo "  pct exec ${FIRST_CTID} -- tail -f /var/log/messages"
+  fi
+}
+
+# ============================================================
+# MODULE: Stop Containers
+# ============================================================
+
+cmd_stop_containers() {
+  section_header "Stop Containers"
+
+  declare -a RUNNING=()
+  for ctid in $(pct list 2>/dev/null | awk 'NR>1 && $2=="running" {print $1}' | sort -n); do
+    if pct config $ctid 2>/dev/null | grep -q "tags:.*lab-managed"; then
+      RUNNING+=($ctid)
+    fi
+  done
+
+  if [ ${#RUNNING[@]} -eq 0 ]; then
+    echo -e "${GREEN}No running lab-managed containers found.${NC}"
+    return 0
+  fi
+
+  printf "%-8s %-20s\n" "CTID" "Hostname"
+  echo "----------------------------"
+  COUNT=0
+  for CTID in "${RUNNING[@]}"; do
+    HOSTNAME=$(get_hostname $CTID)
+    printf "%-8s %-20s\n" "$CTID" "$HOSTNAME"
+    ((++COUNT))
+  done
+  echo ""
+  echo "${COUNT} container(s) will be stopped."
+  echo ""
+  read -p "Proceed? [y/N]: " confirm
+
+  if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
+    echo "Aborted."
+    return 0
+  fi
+
+  echo ""
+  echo -e "${GREEN}Stopping containers...${NC}"
+  echo ""
+  declare -a PIDS=()
+  for CTID in "${RUNNING[@]}"; do
+    HOSTNAME=$(get_hostname $CTID)
+    echo "Stopping CT ${CTID} (${HOSTNAME})..."
+    pct stop $CTID 2>/dev/null &
+    PIDS+=($!)
+  done
+
+  for pid in "${PIDS[@]}"; do
+    wait $pid 2>/dev/null || true
+  done
+
+  section_header "Stop Complete"
+  SUCCESS=0
+  FAILED=0
+  for CTID in "${RUNNING[@]}"; do
+    HOSTNAME=$(get_hostname $CTID)
+    STATUS=$(get_status $CTID)
+    if [ "$STATUS" = "stopped" ]; then
+      echo -e "${GREEN}✓ CT ${CTID} (${HOSTNAME}) stopped${NC}"
+      ((++SUCCESS))
+    else
+      echo -e "${RED}✗ CT ${CTID} (${HOSTNAME}) failed${NC}"
+      ((++FAILED))
+    fi
+  done
+
+  echo ""
+  echo -e "${GREEN}Successfully stopped: ${SUCCESS}${NC}"
+  if [ $FAILED -gt 0 ]; then
+    echo -e "${RED}Failed: ${FAILED}${NC}"
   fi
 }
 
@@ -1279,7 +1403,7 @@ cmd_install_traffic_gen() {
       ;;
 
     2)
-      read_with_default "HQ starting CTID" "200" "HQ_START"
+      read_with_default "HQ starting CTID" "${HQ_START:-200}" "HQ_START"
       HQ_END=$((HQ_START + 5))
 
       echo "HQ containers (${HQ_START}-${HQ_END}):"
@@ -1292,12 +1416,12 @@ cmd_install_traffic_gen() {
         else
           echo -e "  ${YELLOW}CT ${ctid}: not running (skipped)${NC}"
         fi
-        ((offset++))
+        ((++offset))
       done
       ;;
 
     3)
-      read_with_default "Branch starting CTID" "220" "BRANCH_START"
+      read_with_default "Branch starting CTID" "${BRANCH_START:-220}" "BRANCH_START"
       BRANCH_END=$((BRANCH_START + 4))
 
       echo "Branch containers (${BRANCH_START}-${BRANCH_END}):"
@@ -1310,7 +1434,7 @@ cmd_install_traffic_gen() {
         else
           echo -e "  ${YELLOW}CT ${ctid}: not running (skipped)${NC}"
         fi
-        ((offset++))
+        ((++offset))
       done
       ;;
 
@@ -1370,8 +1494,8 @@ cmd_install_traffic_gen() {
       INTENSITY="Heavy"
       ;;
     4)
-      read -p "Server cron schedule (e.g., */15 * * * *): " CRON_SERVER
-      read -p "Office cron schedule (e.g., */5 8-18 * * 1-5): " CRON_OFFICE
+      read_with_default "Server cron schedule" "${CRON_SERVER:-*/15 * * * *}" "CRON_SERVER"
+      read_with_default "Office cron schedule" "${CRON_OFFICE:-*/5 8-18 * * 1-5}" "CRON_OFFICE"
       INTENSITY="Custom"
       ;;
   esac
@@ -1482,6 +1606,7 @@ cmd_install_traffic_gen() {
     echo "To enable automatic traffic:"
     echo "  Re-run install (option 4) and choose 'Full install' mode"
   fi
+  _maybe_save_config
 }
 
 # ============================================================
@@ -1547,6 +1672,8 @@ cmd_full_wizard() {
     return 0
   fi
 
+  WIZARD_MODE=true
+
   echo ""
   echo -e "${CYAN}===== STEP 1/4: Create Template =====${NC}"
   cmd_create_template
@@ -1563,8 +1690,12 @@ cmd_full_wizard() {
   echo -e "${CYAN}===== STEP 4/4: Install Traffic Generator =====${NC}"
   cmd_install_traffic_gen
 
+  WIZARD_MODE=false
+
   section_header "✓ Full Lab Setup Complete"
   echo "Your Proxmox lab is ready!"
+  echo ""
+  save_config
   echo ""
   echo "Run with 'status' or choose option 5 to check the current state."
 }
@@ -1645,7 +1776,111 @@ cmd_update() {
   echo -e "${GREEN}✓ Updated to v${REMOTE_VERSION}${NC}"
   echo ""
   echo "Script updated. Re-launch proxmox-lab.sh for the new version."
-  echo "To push updated traffic profiles to containers, use option 4 (Install Traffic Generator)."
+  echo "To push updated traffic profiles to containers, use option 5 (Install Traffic Generator)."
+}
+
+cmd_system_cleanup() {
+  section_header "System Cleanup"
+
+  # Containers tagged lab-managed (deployed containers)
+  LAB_CTIDS=()
+  for ctid in $(pct list 2>/dev/null | awk 'NR>1 {print $1}' | sort -n); do
+    if pct config $ctid 2>/dev/null | grep -q "tags:.*lab-managed"; then
+      LAB_CTIDS+=($ctid)
+    fi
+  done
+
+  # Template identified by saved TEMPLATE_ID
+  TEMPLATE_CTID=""
+  if [ -n "${TEMPLATE_ID:-}" ] && pct status "$TEMPLATE_ID" &>/dev/null; then
+    TEMPLATE_CTID="$TEMPLATE_ID"
+  fi
+
+  ALPINE_IMAGES=()
+  for f in /var/lib/vz/template/cache/alpine-*.tar.xz; do
+    [ -f "$f" ] && ALPINE_IMAGES+=("$f")
+  done
+
+  if [ ${#LAB_CTIDS[@]} -eq 0 ] && [ -z "$TEMPLATE_CTID" ] && [ ${#ALPINE_IMAGES[@]} -eq 0 ]; then
+    echo "Nothing to clean up."
+    return 0
+  fi
+
+  echo "The following will be PERMANENTLY DESTROYED:"
+  echo ""
+  if [ -n "$TEMPLATE_CTID" ]; then
+    echo "Template:"
+    echo "  CT ${TEMPLATE_CTID} ($(get_hostname $TEMPLATE_CTID)) — template"
+  fi
+  if [ ${#LAB_CTIDS[@]} -gt 0 ]; then
+    echo "Containers:"
+    for ctid in "${LAB_CTIDS[@]}"; do
+      HOSTNAME=$(get_hostname $ctid)
+      STATUS=$(get_status $ctid)
+      echo "  CT ${ctid} (${HOSTNAME}) — ${STATUS}"
+    done
+  fi
+  if [ ${#ALPINE_IMAGES[@]} -gt 0 ]; then
+    echo ""
+    echo "Alpine template images:"
+    for f in "${ALPINE_IMAGES[@]}"; do
+      echo "  $(basename $f)"
+    done
+  fi
+
+  echo ""
+  echo -e "${RED}WARNING: This cannot be undone.${NC}"
+  echo ""
+  read -p "Type CONFIRM to proceed: " confirm_text
+
+  if [ "$confirm_text" != "CONFIRM" ]; then
+    echo "Aborted."
+    return 0
+  fi
+
+  echo ""
+  echo "Cleaning up..."
+
+  # Destroy deployed containers first (stop if running)
+  for ctid in "${LAB_CTIDS[@]}"; do
+    HOSTNAME=$(get_hostname $ctid)
+    STATUS=$(get_status $ctid)
+    if [ "$STATUS" = "running" ]; then
+      echo "Stopping CT ${ctid}..."
+      pct stop $ctid 2>/dev/null || true
+      sleep 2
+    fi
+    echo "Destroying CT ${ctid} (${HOSTNAME})..."
+    if pct destroy $ctid 2>/dev/null; then
+      echo -e "${GREEN}✓ CT ${ctid} destroyed${NC}"
+    else
+      echo -e "${RED}✗ CT ${ctid} failed to destroy${NC}"
+    fi
+  done
+
+  # Destroy template
+  if [ -n "$TEMPLATE_CTID" ]; then
+    echo "Destroying template CT ${TEMPLATE_CTID}..."
+    if pct destroy $TEMPLATE_CTID 2>/dev/null; then
+      echo -e "${GREEN}✓ CT ${TEMPLATE_CTID} destroyed${NC}"
+    else
+      echo -e "${RED}✗ CT ${TEMPLATE_CTID} failed to destroy${NC}"
+    fi
+  fi
+
+  if [ ${#ALPINE_IMAGES[@]} -gt 0 ]; then
+    echo ""
+    echo "Removing Alpine template images..."
+    for f in "${ALPINE_IMAGES[@]}"; do
+      if rm -f "$f"; then
+        echo -e "${GREEN}✓ Removed $(basename $f)${NC}"
+      else
+        echo -e "${RED}✗ Failed to remove $(basename $f)${NC}"
+      fi
+    done
+  fi
+
+  section_header "Cleanup Complete"
 }
 
 # ============================================================
@@ -1662,28 +1897,30 @@ main_menu() {
     echo "  1) Create Template"
     echo "  2) Deploy Containers"
     echo "  3) Start Containers"
-    echo "  4) Install Traffic Generator"
-    echo "  5) Show Status"
-    echo "  6) Full Setup Wizard  (steps 1 → 2 → 3 → 4)"
-    echo "  7) Update"
-    echo "  8) Exit"
+    echo "  4) Stop Containers"
+    echo "  5) Install Traffic Generator"
+    echo "  6) Show Status"
+    echo "  7) Full Setup Wizard  (steps 1 → 2 → 3 → 4)"
+    echo "  8) Update"
+    echo "  9) Exit"
     echo ""
-    read -p "Select option [1-8]: " choice
+    read -p "Select option [1-9]: " choice
 
     case "$choice" in
       1) ( cmd_create_template ) || echo -e "${RED}Operation failed or was aborted.${NC}" ;;
       2) ( cmd_deploy_containers ) || echo -e "${RED}Operation failed or was aborted.${NC}" ;;
       3) ( cmd_start_containers ) || echo -e "${RED}Operation failed or was aborted.${NC}" ;;
-      4) ( cmd_install_traffic_gen ) || echo -e "${RED}Operation failed or was aborted.${NC}" ;;
-      5) ( cmd_show_status ) || echo -e "${RED}Operation failed or was aborted.${NC}" ;;
-      6) ( cmd_full_wizard ) || echo -e "${RED}Wizard failed or was aborted.${NC}" ;;
-      7) ( cmd_update ) || echo -e "${RED}Operation failed or was aborted.${NC}" ;;
-      8|q|Q)
+      4) ( cmd_stop_containers ) || echo -e "${RED}Operation failed or was aborted.${NC}" ;;
+      5) ( cmd_install_traffic_gen ) || echo -e "${RED}Operation failed or was aborted.${NC}" ;;
+      6) ( cmd_show_status ) || echo -e "${RED}Operation failed or was aborted.${NC}" ;;
+      7) ( cmd_full_wizard ) || echo -e "${RED}Wizard failed or was aborted.${NC}" ;;
+      8) ( cmd_update ) || echo -e "${RED}Operation failed or was aborted.${NC}" ;;
+      9|q|Q)
         echo "Goodbye!"
         exit 0
         ;;
       *)
-        echo -e "${RED}Invalid option. Please select 1-8.${NC}"
+        echo -e "${RED}Invalid option. Please select 1-9.${NC}"
         ;;
     esac
   done
@@ -1698,10 +1935,12 @@ case "${1:-}" in
   create-template)  cmd_create_template ;;
   deploy)           cmd_deploy_containers ;;
   start)            cmd_start_containers ;;
+  stop)             cmd_stop_containers ;;
   install-traffic)  cmd_install_traffic_gen ;;
   status)           cmd_show_status ;;
   wizard)           cmd_full_wizard ;;
   update)           cmd_update ;;
+  _cleanup)         cmd_system_cleanup ;;
   --version|-v)     echo "proxmox-lab.sh v${VERSION}" ;;
   "")               main_menu ;;
   *)
@@ -1713,6 +1952,7 @@ case "${1:-}" in
     echo "  create-template    Create Alpine LXC template"
     echo "  deploy             Deploy lab containers"
     echo "  start              Start containers"
+    echo "  stop               Stop all running containers"
     echo "  install-traffic    Install traffic generators"
     echo "  status             Show container status"
     echo "  wizard             Full setup wizard"

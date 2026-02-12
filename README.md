@@ -35,12 +35,13 @@ A single interactive menu that combines all four scripts into one tool.
 **Menu options:**
 1. **Create Template** — create an Alpine LXC template
 2. **Deploy Containers** — clone and configure lab containers
-3. **Start Containers** — start stopped containers with status tracking
-4. **Install Traffic Generator** — push traffic profiles to containers
-5. **Show Status** — view all containers with running state and traffic gen status at a glance
-6. **Full Setup Wizard** — runs steps 1 → 2 → 3 → 4 in sequence
-7. **Update** — check GitHub for a newer version, show changelog, and self-patch the script in place
-8. **Exit**
+3. **Start Containers** — start stopped lab-managed containers
+4. **Stop Containers** — stop all running lab-managed containers
+5. **Install Traffic Generator** — push traffic profiles to containers
+6. **Show Status** — view all containers with running state and traffic gen status at a glance
+7. **Full Setup Wizard** — runs steps 1 → 2 → 3 → 4 in sequence
+8. **Update** — check GitHub for a newer version, show changelog, and self-patch the script in place
+9. **Exit**
 
 **Interactive menu:**
 ```bash
@@ -52,11 +53,16 @@ A single interactive menu that combines all four scripts into one tool.
 ./proxmox-lab.sh create-template
 ./proxmox-lab.sh deploy
 ./proxmox-lab.sh start
+./proxmox-lab.sh stop
 ./proxmox-lab.sh install-traffic
 ./proxmox-lab.sh status
 ./proxmox-lab.sh wizard
 ./proxmox-lab.sh update
 ```
+
+**Config persistence:**
+
+On first run, the script prompts for all values as usual. After completing any command, it offers to save the answers to `~/.proxmox-lab.conf`. On every subsequent run those values pre-populate all prompts — press Enter to accept, or type a new value to override. The config file survives script updates. The Full Setup Wizard auto-saves once at the end without prompting at each step.
 
 ---
 
