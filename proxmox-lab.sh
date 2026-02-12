@@ -13,6 +13,7 @@ YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 CYAN='\033[0;36m'
 NC='\033[0m'
+VERSION="1.0.0"
 
 read_with_default() {
   local prompt="$1"
@@ -1571,7 +1572,7 @@ main_menu() {
   while true; do
     echo ""
     echo -e "${BLUE}=========================================="
-    echo "  Proxmox Lab Manager"
+    echo "  Proxmox Lab Manager v${VERSION}"
     echo -e "==========================================${NC}"
     echo ""
     echo "  1) Create Template"
@@ -1614,6 +1615,7 @@ case "${1:-}" in
   install-traffic)  cmd_install_traffic_gen ;;
   status)           cmd_show_status ;;
   wizard)           cmd_full_wizard ;;
+  --version|-v)     echo "proxmox-lab.sh v${VERSION}" ;;
   "")               main_menu ;;
   *)
     echo -e "${RED}Unknown command: $1${NC}"
@@ -1627,6 +1629,7 @@ case "${1:-}" in
     echo "  install-traffic    Install traffic generators"
     echo "  status             Show container status"
     echo "  wizard             Full setup wizard"
+    echo "  --version          Show version"
     echo ""
     echo "Run without arguments for the interactive menu."
     exit 1
