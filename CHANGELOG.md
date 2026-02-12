@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Security test framework: dedicated scripts in `/opt/traffic-gen/security-tests/` on each container, dispatched by `run-security-tests.sh` on its own cron schedule (`CRON_SECURITY`, default `*/30 * * * *`)
+- Seven security test types: `eicar` (AV), `dlp-network` (POST fake SSN/CCN), `dlp-genai-prompt` (PII embedded in AI API prompt), `dlp-genai-file` (document upload with PII to AI file API), `dlp-genai-image` (PNG with PII rendered via ImageMagick to AI vision API, tests OCR DLP), `policy-violation` (access to blocked personal cloud apps), `ueba` (after-hours access simulation)
+- Security test submenu in Install Traffic Generator (step 4): recommended defaults per profile, all tests, custom per-test selection, or skip
+- GenAI traffic in `executive`, `sales`, `developer`, and `devops` profiles: `genai_browse()` visits public ChatGPT/Claude/Gemini/HuggingFace/Perplexity/Poe pages; `genai_api_call()` submits business-context prompts to HuggingFace anonymous inference API
+- `genai.sh` utility installed to `/opt/traffic-gen/utils/` on all containers; includes 12 realistic business prompts
+- `CRON_SECURITY` persisted to `~/.proxmox-lab.conf`
+- ImageMagick auto-installed on containers when `dlp-genai-image` test is selected
+- DLP tests target real AI API endpoints (OpenAI, Anthropic, Google Gemini) — requests are inspected by Zscaler regardless of 401 response; no valid API keys are used or required
+
+### Changed
+- Embedded security violations removed from profile scripts; profiles now generate clean traffic only — all security events are controlled via the security test framework
+- `executive` profile: UEBA after-hours behaviour moved to `security-tests/ueba.sh`; `executive.sh` now exits cleanly outside business hours
+- `fileserver` profile: network DLP POST moved to `security-tests/dlp-network.sh`
+- `devops` profile: EICAR download moved to `security-tests/eicar.sh`
+- `office-worker` profile: Dropbox policy violation moved to `security-tests/policy-violation.sh`
+- GenAI browsing avoids Microsoft Copilot (uses WebSockets, incompatible with standard TLS inspection)
+
 ### Removed
 - `create-template.sh`, `deploy-container.sh`, `start-containers.sh`, and `install-traffic-gen.sh` — standalone scripts that duplicated functionality already in `proxmox-lab.sh`; `proxmox-lab.sh` is now the sole entry point
 

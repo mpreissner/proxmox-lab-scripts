@@ -21,8 +21,8 @@ Provides a complete workflow for building a multi-container lab environment that
 
 - **Creates Alpine LXC templates** with pre-configured utilities
 - **Deploys HQ and Branch network containers** with appropriate configurations
-- **Generates realistic traffic patterns** for different user/server profiles
-- **Simulates security events** (DLP triggers, malware downloads, policy violations, UEBA anomalies)
+- **Generates realistic traffic patterns** for different user/server profiles, including GenAI platform usage
+- **Configures security tests** independently of normal traffic — DLP (network, GenAI prompt/file/image OCR), AV/malware, policy violations, UEBA anomalies
 
 ## Script
 
@@ -101,7 +101,7 @@ pct exec 200 -- tail -f /var/log/messages
 pct exec 220 -- tail -f /var/log/messages
 ```
 
-Check cron schedules:
+Check cron schedules (traffic + security tests):
 ```bash
 pct exec 200 -- crontab -l
 ```
@@ -109,6 +109,17 @@ pct exec 200 -- crontab -l
 Manual traffic generation:
 ```bash
 pct exec 200 -- /opt/traffic-gen/traffic-gen.sh fileserver
+```
+
+Run all security tests manually:
+```bash
+pct exec 200 -- /opt/traffic-gen/run-security-tests.sh
+```
+
+Run a single security test manually:
+```bash
+pct exec 224 -- bash /opt/traffic-gen/security-tests/ueba.sh
+pct exec 200 -- bash /opt/traffic-gen/security-tests/dlp-network.sh
 ```
 
 ---
@@ -131,10 +142,11 @@ pct exec 200 -- /opt/traffic-gen/traffic-gen.sh fileserver
 
 ### Traffic Schedules
 
-| Profile Type | Schedule | Active Hours |
-|-------------|----------|--------------|
+| Cron | Default Schedule | Active Hours |
+|------|-----------------|--------------|
 | Server profiles | Every 15 min | 24/7 |
 | Office profiles | Every 5 min | M-F 8am-6pm |
+| Security tests | Every 30 min | 24/7 (UEBA script self-limits to after-hours) |
 
 ---
 
@@ -142,30 +154,54 @@ pct exec 200 -- /opt/traffic-gen/traffic-gen.sh fileserver
 
 ### Business Hours Simulation
 - **Morning (8-10am):** Email checks, news browsing
-- **Work hours (10am-12pm, 1pm-6pm):** SaaS applications, collaboration tools
+- **Work hours (10am-12pm, 1pm-6pm):** SaaS applications, collaboration tools, GenAI assistants
 - **Lunch (12-1pm):** Personal browsing, shopping, social media attempts
-- **After hours:** Minimal activity, UEBA anomalies (executive profile)
-
-### Security Event Simulation
-- **DLP Triggers:** 10% chance of sensitive data upload (fileserver)
-- **Malware Download:** EICAR test file every ~30 runs (devops)
-- **Policy Violations:** Social media, unauthorized file sharing (office-worker)
-- **UEBA Anomalies:** After-hours access patterns (executive)
+- **After hours:** Minimal activity (UEBA test fires independently if enabled)
 
 ### Traffic Profiles
 
-| Profile | Domains/Services | Security Tests |
-|---------|-----------------|----------------|
-| **fileserver** | OneDrive, Dropbox, S3 | DLP (SSN/CCN exfiltration) |
-| **webapp** | Stripe API, CDN services | Certificate validation |
-| **email** | Office 365, Gmail, SpamHaus | Email security |
-| **monitoring** | Ubuntu repos, Datadog, Docker Hub | Package management |
-| **devops** | npm, PyPI, GitHub, Docker | EICAR malware test |
-| **database** | AWS RDS, Azure SQL, S3 | Cloud backup |
-| **office-worker** | Salesforce, Slack, Google Docs, social media | Policy violations |
-| **sales** | LinkedIn, Salesforce, Zoom, travel sites | SaaS heavy usage |
-| **developer** | GitHub, StackOverflow, AWS Console | Developer tools |
-| **executive** | Office 365, WSJ, Bloomberg | UEBA (after-hours email) |
+| Profile | Domains/Services | GenAI |
+|---------|-----------------|-------|
+| **fileserver** | OneDrive, Dropbox, S3 | — |
+| **webapp** | Stripe API, CDN services | — |
+| **email** | Office 365, Gmail, SpamHaus | — |
+| **monitoring** | Ubuntu repos, Datadog, Docker Hub | — |
+| **devops** | npm, PyPI, GitHub, Docker | Browse + API call |
+| **database** | AWS RDS, Azure SQL, S3 | — |
+| **office-worker** | Salesforce, Slack, Google Docs, news | — |
+| **sales** | LinkedIn, Salesforce, Zoom, travel | Browse + API call |
+| **developer** | GitHub, StackOverflow, AWS Console | Browse + API call |
+| **executive** | Office 365, WSJ, Bloomberg, Zoom | Browse + API call |
+
+GenAI browsing visits ChatGPT, Claude, Gemini, HuggingFace, Perplexity, and Poe. API calls submit business-context prompts to the HuggingFace anonymous inference API. Microsoft Copilot is excluded (WebSockets, incompatible with standard TLS inspection).
+
+### Security Tests
+
+Security tests are installed separately from normal traffic profiles and run on their own cron. Enabling or disabling a test is done during Install Traffic Generator (step 4) and takes effect immediately — no container restart needed.
+
+| Test | Category | What It Generates |
+|------|----------|-------------------|
+| `eicar` | AV | EICAR test file download |
+| `dlp-network` | DLP | POST with fake SSN + CCN to HTTPS endpoint |
+| `dlp-genai-prompt` | DLP | JSON prompt with PII to OpenAI/Anthropic/Google API |
+| `dlp-genai-file` | DLP | Multipart document upload with PII to AI file API |
+| `dlp-genai-image` | DLP OCR | ImageMagick-rendered PNG with PII to AI vision API |
+| `policy-violation` | Policy | HTTP access to Dropbox, WeTransfer, Mega, Box |
+| `ueba` | UEBA | After-hours O365, Teams, SharePoint access |
+
+**How GenAI DLP tests work:** The tests POST to real AI API endpoints (OpenAI, Anthropic, Google Gemini) with no valid API key. The server returns 401. Zscaler DLP inspects the outbound request body before the response arrives, so the DLP trigger fires on the request payload regardless. The traffic appears as a real user attempting to use a ChatGPT or Claude API.
+
+**Default test assignments by profile:**
+
+| Profile | Default security tests |
+|---------|----------------------|
+| fileserver | dlp-network |
+| devops | eicar, dlp-genai-prompt, dlp-genai-file |
+| developer | eicar, dlp-genai-prompt, dlp-genai-file |
+| office-worker | policy-violation, dlp-genai-prompt |
+| sales | policy-violation, dlp-genai-prompt, dlp-genai-file |
+| executive | ueba, dlp-genai-prompt |
+| All others | none |
 
 ### Traffic Volume
 - ~20-40 requests per day per domain
@@ -194,6 +230,18 @@ pct exec 200 -- /opt/traffic-gen/traffic-gen.sh fileserver
 ./proxmox-lab.sh install-traffic
 # Select "Custom selection"
 # Example: 300:fileserver,301:webapp,320:developer
+```
+
+### Custom Security Tests
+```bash
+./proxmox-lab.sh install-traffic
+# Step 4 → Custom selection
+# Choose which tests to enable per container
+```
+
+To disable a specific test on a container without reinstalling everything:
+```bash
+pct exec <CTID> -- rm /opt/traffic-gen/security-tests/eicar.sh
 ```
 
 ---
@@ -240,9 +288,11 @@ pct exec <CTID> -- curl -I https://google.com
 
 ### Traffic Generation
 - Volume is intentionally low (~1-2 requests/hour per domain)
-- Will NOT trigger rate limits or blocklists
+- Will NOT trigger rate limits or blocklists on normal traffic
 - Safe for production internet connections
 - EICAR test file is industry-standard, non-malicious test payload
+- GenAI DLP tests POST to real AI APIs with no valid key — server returns 401, but the outbound request is inspected by Zscaler as intended
+- `dlp-genai-image` installs ImageMagick (~10 MB) on the container when enabled
 
 ### Storage Requirements
 - Each container: ~100-200 MB
