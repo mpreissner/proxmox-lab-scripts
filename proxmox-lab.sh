@@ -13,7 +13,7 @@ YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 CYAN='\033[0;36m'
 NC='\033[0m'
-VERSION="1.2.0"
+VERSION="1.2.1"
 
 CONFIG_FILE="${HOME}/.proxmox-lab.conf"
 if [ -f "$CONFIG_FILE" ]; then
@@ -159,7 +159,9 @@ cmd_create_template() {
   echo ""
   echo -e "${BLUE}2. Proxmox Node${NC}"
   echo "Available nodes:"
-  pvesh get /nodes --output-format json | jq -r '.[].node' 2>/dev/null || echo "  (Unable to detect nodes)"
+  pvesh get /nodes --output-format json 2>/dev/null | \
+    python3 -c "import sys,json; [print('  ' + n['node']) for n in json.load(sys.stdin)]" \
+    2>/dev/null || echo "  (Unable to detect nodes)"
   [ -n "${NODE:-}" ] && echo "  Last used: ${NODE}"
   read -p "Node name [${NODE:-}]: " input
   NODE="${input:-${NODE:-}}"
