@@ -179,18 +179,20 @@ pct exec 200 -- bash /opt/traffic-gen/security-tests/dlp-network.sh
 
 ### Traffic Profiles
 
-| Profile | Domains/Services | GenAI |
-|---------|-----------------|-------|
-| **fileserver** | OneDrive, Dropbox, S3 | — |
-| **webapp** | Stripe API, CDN services | — |
-| **email** | Office 365, Gmail, SpamHaus | — |
-| **monitoring** | Ubuntu repos, Datadog, Docker Hub | — |
-| **devops** | npm, PyPI, GitHub, Docker | Browse + API call |
-| **database** | AWS RDS, Azure SQL, S3 | — |
-| **office-worker** | Salesforce, Slack, Google Docs, news | — |
-| **sales** | LinkedIn, Salesforce, Zoom, travel | Browse + API call |
-| **developer** | GitHub, StackOverflow, AWS Console | Browse + API call |
-| **executive** | Office 365, WSJ, Bloomberg, Zoom | Browse + API call |
+| Profile | Domains/Services | User Agent | GenAI |
+|---------|-----------------|-----------|-------|
+| **fileserver** | OneDrive, Dropbox, S3 | OneDrive Sync, Dropbox, aws-cli | — |
+| **webapp** | Stripe API, CDN services, OCSP | Stripe-Node, WebServer, OpenSSL, aws-cli | — |
+| **email** | Office 365, Gmail, SpamHaus, ClamAV | Exchange Server, Postfix, SpamAssassin, ClamAV | — |
+| **monitoring** | Ubuntu repos, Datadog, New Relic, Docker Hub, GitHub | Debian APT, Datadog Agent, NewRelic, Docker, GitHub Actions | — |
+| **devops** | npm, PyPI, GitHub, Docker Hub | npm, pip, git, GitHub Actions, Docker | Browse + API call |
+| **database** | AWS RDS, Azure SQL, S3 | aws-sdk-java, Boto3, azsdk-python | — |
+| **office-worker** | Salesforce, Slack, Google Docs, news | Windows/Mac browser pool (Chrome, Edge, Firefox) | — |
+| **sales** | LinkedIn, Salesforce, Zoom, travel | Mac browser pool (Safari, Chrome) | Browse + API call |
+| **developer** | GitHub, StackOverflow, npm, PyPI, AWS Console | Mac/Linux browser pool; git, npm, pip, Docker for tool calls | Browse + API call |
+| **executive** | Office 365, WSJ, Bloomberg, Zoom | Mac Safari pool | Browse + API call |
+
+Server profiles send role-appropriate SDK and tool user agents matching the software that would realistically generate each request. User profiles pick from a persona-specific browser UA pool once per run and use it consistently throughout, so all requests within a session appear to come from the same device.
 
 GenAI browsing visits ChatGPT, Claude, Gemini, HuggingFace, Perplexity, and Poe. API calls submit business-context prompts to the HuggingFace anonymous inference API. Microsoft Copilot is excluded (WebSockets, incompatible with standard TLS inspection).
 
@@ -225,7 +227,7 @@ Security tests are installed separately from normal traffic profiles and run on 
 ### Traffic Volume
 - ~20-40 requests per day per domain
 - Randomized delays (5-60 seconds)
-- Realistic user agent rotation
+- Role-appropriate user agents: SDK/tool strings for server profiles, persona-specific browser pools for user profiles
 - Business hours enforcement for user profiles
 
 ---
