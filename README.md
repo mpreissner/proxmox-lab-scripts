@@ -7,7 +7,7 @@ An interactive shell script for deploying and managing a Proxmox LXC container-b
 **Important:** This lab was developed with a specific network topology in mind:
 
 - **Router Configuration:** The lab router has existing IPsec/GRE tunnels to two separate Zscaler data centers
-- **Location Simulation:** HQ and Branch subnets are treated as separate physical locations in Zscaler
+- **Location Simulation:** Data Center and Branch subnets are treated as separate physical locations in Zscaler
 - **DNS Resolution:** DNS for both subnets is handled by Zscaler Trusted Resolver, specified to containers via DHCP
 - **Traffic Flow:** All container traffic egresses through the Zscaler cloud via the appropriate tunnel
 
@@ -20,7 +20,7 @@ Provides a complete workflow for building a multi-container lab environment that
 ### What It Does
 
 - **Creates Alpine LXC templates** with pre-configured utilities
-- **Deploys HQ and Branch network containers** with appropriate configurations
+- **Deploys Data Center and Branch network containers** with appropriate configurations
 - **Generates realistic traffic patterns** for different user/server profiles, including GenAI platform usage
 - **Configures security tests** independently of normal traffic — DLP (network, GenAI prompt/file/image OCR), AV/malware, policy violations, UEBA anomalies
 
@@ -149,7 +149,7 @@ pct exec 200 -- bash /opt/traffic-gen/security-tests/dlp-network.sh
 
 | Network | VLAN | CTID Range | Container Count |
 |---------|------|------------|-----------------|
-| HQServerNet | 200 | 200-205 | 6 servers |
+| Data Center | 200 | 200-205 | 6 servers |
 | BranchNet | 201 | 220-224 | 5 users |
 
 ### Resource Allocation
@@ -235,7 +235,7 @@ Security tests are installed separately from normal traffic profiles and run on 
 ### Custom CTID Ranges
 ```bash
 ./proxmox-lab.sh deploy
-# Select HQ only, enter 300 as starting CTID
+# Select Data Center only, enter 300 as starting CTID
 ```
 
 ### Custom Traffic Intensity

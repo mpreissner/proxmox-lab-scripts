@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.2] - 2026-02-13
+
+### Changed
+- "HQ ServerNet" renamed to "Data Center" throughout all UI labels, prompts, and documentation; internal variable names and container hostnames are unchanged
+
+## [1.2.1] - 2026-02-13
+
+### Fixed
+- Node enumeration in `create-template` always fell back to "(Unable to detect nodes)" because `jq` is not installed on Proxmox hosts; replaced with `python3` JSON parsing, which is always available on PVE
+
 ## [1.2.0] - 2026-02-13
 
 ### Added
@@ -73,7 +83,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `browse_random()` invalid test operator (`-file` → `-f`) in `random-timing.sh`
 - `RUNNING_CONTAINERS` in `cmd_install_traffic_gen` now correctly filters to running containers only (`pct list` filtered by status field)
 
-[Unreleased]: https://github.com/mpreissner/proxmox-lab-scripts/compare/v1.2.0...HEAD
+[Unreleased]: https://github.com/mpreissner/proxmox-lab-scripts/compare/v1.2.2...HEAD
+[1.2.2]: https://github.com/mpreissner/proxmox-lab-scripts/compare/v1.2.1...v1.2.2
+[1.2.1]: https://github.com/mpreissner/proxmox-lab-scripts/compare/v1.2.0...v1.2.1
 [1.2.0]: https://github.com/mpreissner/proxmox-lab-scripts/compare/v1.1.1...v1.2.0
 [1.1.1]: https://github.com/mpreissner/proxmox-lab-scripts/compare/v1.1.0...v1.1.1
 [1.1.0]: https://github.com/mpreissner/proxmox-lab-scripts/compare/v1.0.0...v1.1.0
