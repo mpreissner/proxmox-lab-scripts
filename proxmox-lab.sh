@@ -13,7 +13,7 @@ YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 CYAN='\033[0;36m'
 NC='\033[0m'
-VERSION="1.1.1"
+VERSION="1.2.0"
 
 CONFIG_FILE="${HOME}/.proxmox-lab.conf"
 if [ -f "$CONFIG_FILE" ]; then
@@ -85,6 +85,7 @@ CORES="${CORES:-1}"
 CRON_SERVER="${CRON_SERVER:-*/15 * * * *}"
 CRON_OFFICE="${CRON_OFFICE:-*/5 8-18 * * 1-5}"
 CRON_SECURITY="${CRON_SECURITY:-*/30 * * * *}"
+CERT_PATH="${CERT_PATH:-}"
 EOF
   echo -e "${GREEN}✓ Settings saved to ~/.proxmox-lab.conf${NC}"
 }
@@ -199,6 +200,20 @@ cmd_create_template() {
   echo -e "${BLUE}6. Network Configuration${NC}"
   read_with_default "Bridge" "${BRIDGE:-vmbr0}" "BRIDGE"
 
+  # 7. TLS Inspection Certificate (optional)
+  echo ""
+  echo -e "${BLUE}7. TLS Inspection Certificate (optional)${NC}"
+  echo "If your network uses TLS inspection (e.g., Zscaler), provide the path"
+  echo "to the root CA certificate on this host. It will be installed into the"
+  echo "template so all cloned containers trust it automatically."
+  echo "Press Enter to skip."
+  read -p "Certificate path [${CERT_PATH:-}]: " input
+  CERT_PATH="${input:-${CERT_PATH:-}}"
+  if [ -n "${CERT_PATH:-}" ] && [ ! -f "$CERT_PATH" ]; then
+    echo -e "${YELLOW}Warning: File not found at '${CERT_PATH}' — certificate will not be installed${NC}"
+    CERT_PATH=""
+  fi
+
   # Summary
   section_header "Configuration Summary"
   echo "Template ID:    ${TEMPLATE_ID}"
@@ -208,6 +223,11 @@ cmd_create_template() {
   echo "Memory:         ${MEMORY} MB"
   echo "CPU Cores:      ${CORES}"
   echo "Bridge:         ${BRIDGE}"
+  if [ -n "${CERT_PATH:-}" ]; then
+    echo "Certificate:    ${CERT_PATH}"
+  else
+    echo "Certificate:    (none)"
+  fi
   echo ""
   read -p "Proceed with creation? [y/N]: " confirm
 
@@ -248,7 +268,7 @@ cmd_create_template() {
   echo "Installing base packages..."
   pct exec $TEMPLATE_ID -- sh -c "
     apk update
-    apk add curl wget bind-tools bash jq python3 py3-pip dcron nano vim openrc
+    apk add curl wget bind-tools bash jq python3 py3-pip dcron nano vim openrc ca-certificates
 
     # Enable cron
     rc-update add dcron default
@@ -258,6 +278,20 @@ cmd_create_template() {
 
     echo 'Template configuration complete'
   "
+
+  if [ -n "${CERT_PATH:-}" ] && [ -f "$CERT_PATH" ]; then
+    echo "Installing TLS inspection certificate..."
+    CERT_FILENAME=$(basename "$CERT_PATH")
+    pct push $TEMPLATE_ID "$CERT_PATH" "/tmp/${CERT_FILENAME}"
+    pct exec $TEMPLATE_ID -- sh -c "
+      mkdir -p /usr/local/share/ca-certificates
+      cp /tmp/${CERT_FILENAME} /usr/local/share/ca-certificates/${CERT_FILENAME}
+      update-ca-certificates 2>/dev/null || \
+        cat /usr/local/share/ca-certificates/${CERT_FILENAME} >> /etc/ssl/certs/ca-certificates.crt
+      rm /tmp/${CERT_FILENAME}
+    "
+    echo -e "${GREEN}✓ Certificate installed in template${NC}"
+  fi
 
   echo "Stopping and converting to template..."
   pct stop $TEMPLATE_ID
@@ -970,7 +1004,7 @@ EOF
 FAKE_SSN="$((RANDOM % 900 + 100))-$((RANDOM % 90 + 10))-$((RANDOM % 9000 + 1000))"
 FAKE_CCN="4111$((RANDOM % 9000 + 1000))$((RANDOM % 9000 + 1000))$((RANDOM % 9000 + 1000))"
 FAKE_ACCT="$((RANDOM % 900000000 + 100000000))"
-TMPFILE=$(mktemp /tmp/dlp-doc.XXXXXX.txt)
+TMPFILE=$(mktemp /tmp/dlp-doc.XXXXXX)
 cat > "$TMPFILE" <<PIIEOF
 CONFIDENTIAL - Employee Financial Record
 ========================================
@@ -1000,8 +1034,8 @@ EOF
 # Requires imagemagick (installed by proxmox-lab.sh)
 FAKE_SSN="$((RANDOM % 900 + 100))-$((RANDOM % 90 + 10))-$((RANDOM % 9000 + 1000))"
 FAKE_CCN="4111$((RANDOM % 9000 + 1000))$((RANDOM % 9000 + 1000))$((RANDOM % 9000 + 1000))"
-TMPIMG=$(mktemp /tmp/dlp-img.XXXXXX.png)
-TMPJSON=$(mktemp /tmp/dlp-req.XXXXXX.json)
+TMPIMG="/tmp/dlp-img.$$.png"
+TMPJSON="/tmp/dlp-req.$$.json"
 convert -size 500x180 xc:white \
   -font DejaVu-Sans -pointsize 14 -fill black \
   -draw "text 20,30 'CONFIDENTIAL - Employee Record'" \

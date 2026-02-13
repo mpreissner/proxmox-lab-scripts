@@ -7,7 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-02-13
+
 ### Added
+- TLS inspection certificate support in `create-template`: optional prompt for a root CA certificate path on the Proxmox host; if provided, the certificate is installed into the template via Alpine's `update-ca-certificates` so all cloned containers inherit it automatically; `CERT_PATH` persisted to `~/.proxmox-lab.conf`
 - Security test framework: dedicated scripts in `/opt/traffic-gen/security-tests/` on each container, dispatched by `run-security-tests.sh` on its own cron schedule (`CRON_SECURITY`, default `*/30 * * * *`)
 - Seven security test types: `eicar` (AV), `dlp-network` (POST fake SSN/CCN), `dlp-genai-prompt` (PII embedded in AI API prompt), `dlp-genai-file` (document upload with PII to AI file API), `dlp-genai-image` (PNG with PII rendered via ImageMagick to AI vision API, tests OCR DLP), `policy-violation` (access to blocked personal cloud apps), `ueba` (after-hours access simulation)
 - Security test submenu in Install Traffic Generator (step 4): recommended defaults per profile, all tests, custom per-test selection, or skip
@@ -24,6 +27,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `devops` profile: EICAR download moved to `security-tests/eicar.sh`
 - `office-worker` profile: Dropbox policy violation moved to `security-tests/policy-violation.sh`
 - GenAI browsing avoids Microsoft Copilot (uses WebSockets, incompatible with standard TLS inspection)
+
+### Fixed
+- `dlp-genai-file.sh` and `dlp-genai-image.sh` used `mktemp` with file extension suffixes (e.g. `XXXXXX.txt`), which Alpine busybox `mktemp` does not support; `dlp-genai-file` now uses a plain `mktemp` template, `dlp-genai-image` uses PID-based filenames to preserve the `.png` extension ImageMagick requires
 
 ### Removed
 - `create-template.sh`, `deploy-container.sh`, `start-containers.sh`, and `install-traffic-gen.sh` — standalone scripts that duplicated functionality already in `proxmox-lab.sh`; `proxmox-lab.sh` is now the sole entry point
@@ -67,7 +73,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `browse_random()` invalid test operator (`-file` → `-f`) in `random-timing.sh`
 - `RUNNING_CONTAINERS` in `cmd_install_traffic_gen` now correctly filters to running containers only (`pct list` filtered by status field)
 
-[Unreleased]: https://github.com/mpreissner/proxmox-lab-scripts/compare/v1.1.1...HEAD
+[Unreleased]: https://github.com/mpreissner/proxmox-lab-scripts/compare/v1.2.0...HEAD
+[1.2.0]: https://github.com/mpreissner/proxmox-lab-scripts/compare/v1.1.1...v1.2.0
 [1.1.1]: https://github.com/mpreissner/proxmox-lab-scripts/compare/v1.1.0...v1.1.1
 [1.1.0]: https://github.com/mpreissner/proxmox-lab-scripts/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/mpreissner/proxmox-lab-scripts/releases/tag/v1.0.0

@@ -71,6 +71,7 @@ On first run, the script prompts for all values as usual. After completing any c
 - Root or sudo access
 - Network bridge configured (default: vmbr0)
 - Local storage available (local-lvm or local-zfs)
+- TLS inspection root CA certificate on the Proxmox host, if your network performs HTTPS inspection (see below)
 
 ### Full wizard (recommended)
 
@@ -91,6 +92,24 @@ Each step can also be run individually:
 ./proxmox-lab.sh deploy            # Step 2 — clone 11 containers
 ./proxmox-lab.sh start             # Step 3 — start containers
 ./proxmox-lab.sh install-traffic   # Step 4 — install traffic profiles
+```
+
+### TLS Inspection Certificate
+
+If your network performs TLS inspection (e.g., Zscaler), copy your root CA certificate to the Proxmox host before running `create-template`:
+
+```bash
+scp /path/to/ZscalerRootCertificate.crt root@<proxmox-host>:/root/
+```
+
+During step 1 (`create-template`), the script prompts for the certificate path on the host. If provided, the certificate is installed into the template via Alpine's `update-ca-certificates`, and every cloned container inherits it automatically. The path is saved to `~/.proxmox-lab.conf` for subsequent runs.
+
+Zscaler offers a choice of using their built-in root certificate or uploading a custom one — either works. If you are not using TLS inspection, press Enter to skip.
+
+To verify the certificate is trusted in a container after deployment:
+
+```bash
+pct exec 200 -- curl -sv https://www.google.com 2>&1 | grep -E "SSL|issuer|subject"
 ```
 
 ### Verification
