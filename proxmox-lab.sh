@@ -13,12 +13,17 @@ YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 CYAN='\033[0;36m'
 NC='\033[0m'
-VERSION="1.2.4"
+VERSION="2.0.0"
 
 CONFIG_FILE="${HOME}/.proxmox-lab.conf"
 if [ -f "$CONFIG_FILE" ]; then
   bash -n "$CONFIG_FILE" 2>/dev/null && source "$CONFIG_FILE" || \
     echo -e "${YELLOW}Warning: ~/.proxmox-lab.conf has errors, using defaults${NC}"
+fi
+
+# Backward compat: promote old single-node config to NODES list
+if [ -n "${NODE:-}" ] && [ -z "${NODES:-}" ]; then
+  NODES="$NODE"
 fi
 
 read_with_default() {
@@ -72,7 +77,7 @@ WIZARD_MODE=false
 save_config() {
   cat > "$CONFIG_FILE" <<EOF
 # proxmox-lab configuration — saved $(date)
-NODE="${NODE:-}"
+NODES="${NODES:-}"
 BRIDGE="${BRIDGE:-vmbr0}"
 STORAGE="${STORAGE:-local-lvm}"
 VLAN_HQ="${VLAN_HQ:-200}"
@@ -90,6 +95,11 @@ EOF
   echo -e "${GREEN}✓ Settings saved to ~/.proxmox-lab.conf${NC}"
 }
 
+_load_config() {
+  [ -f "$CONFIG_FILE" ] && bash -n "$CONFIG_FILE" 2>/dev/null && \
+    source "$CONFIG_FILE" 2>/dev/null || true
+}
+
 _maybe_save_config() {
   $WIZARD_MODE && return 0
   echo ""
@@ -100,30 +110,27 @@ _maybe_save_config() {
 }
 
 pick_storage() {
-  # Sets STORAGE variable based on user selection
+  local target_node="${1:-$(get_local_node)}"
+
   if [ -n "${STORAGE:-}" ]; then
     echo "  Using saved storage: ${STORAGE}"
     read -p "  Change storage? [y/N]: " chg
     [[ "$chg" =~ ^[Yy]$ ]] || return 0
   fi
-  echo "Common local storage options:"
-  echo "  1) local-lvm"
-  echo "  2) local-zfs"
-  echo "  3) Custom (enter name)"
-  read -p "Select storage [1-3] (default: 1): " storage_choice
 
-  case "${storage_choice:-1}" in
-    1) STORAGE="local-lvm" ;;
-    2) STORAGE="local-zfs" ;;
-    3)
-      read -p "Enter custom storage name: " STORAGE
-      while [ -z "$STORAGE" ]; do
-        echo -e "${RED}Storage name is required${NC}"
-        read -p "Enter custom storage name: " STORAGE
-      done
-      ;;
-    *) STORAGE="local-lvm" ;;
-  esac
+  echo "Available storage pools on ${target_node}:"
+  pvesh get /nodes/"$target_node"/storage --output-format json 2>/dev/null | python3 -c "
+import sys,json
+for p in json.load(sys.stdin):
+    shared = '(shared)' if p.get('shared') else '(local) '
+    print(f'  {p[\"storage\"]:20s} {p[\"type\"]:12s} {shared}')
+" 2>/dev/null || echo "  (unable to list storage)"
+
+  read -p "Storage pool name [${STORAGE:-local-zfs}]: " input
+  STORAGE="${input:-${STORAGE:-local-zfs}}"
+  while [ -z "$STORAGE" ]; do
+    read -p "Storage pool name: " STORAGE
+  done
 }
 
 version_gt() {
@@ -131,11 +138,158 @@ version_gt() {
   test "$(printf '%s\n' "$1" "$2" | sort -V | head -n1)" != "$1"
 }
 
+get_local_node() {
+  cat /etc/pve/.nodename 2>/dev/null || hostname
+}
+
+get_cluster_nodes() {
+  pvesh get /nodes --output-format json 2>/dev/null | \
+    python3 -c "import sys,json; [print(n['node']) for n in json.load(sys.stdin)]" 2>/dev/null
+}
+
+get_node_resources() {
+  local node="$1"
+  pvesh get /nodes/"$node"/status --output-format json 2>/dev/null | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+m = d.get('memory', {})
+total = m.get('total', 0) // 1024 // 1024
+used  = m.get('used',  0) // 1024 // 1024
+free  = m.get('free',  0) // 1024 // 1024
+cpus  = d.get('cpuinfo', {}).get('cpus', 0)
+cpup  = round(d.get('cpu', 0) * 100, 1)
+print(f'{total} {used} {free} {cpus} {cpup}')
+"
+  pvesh get /nodes/"$node"/lxc --output-format json 2>/dev/null | \
+    python3 -c "import sys,json; print(len(json.load(sys.stdin)))" 2>/dev/null || echo 0
+}
+
+ctid_to_node() {
+  local ctid="$1"
+  local local_node nodes node raw
+  local_node=$(get_local_node)
+  nodes=$(get_cluster_nodes 2>/dev/null)
+  [ -z "$nodes" ] && nodes="$local_node"
+  for node in $nodes; do
+    raw=$(pvesh get /nodes/"$node"/lxc --output-format json 2>/dev/null) || continue
+    if echo "$raw" | python3 -c "
+import sys,json
+for r in json.load(sys.stdin):
+    if str(r.get('vmid','')) == '${ctid}':
+        raise SystemExit(0)
+raise SystemExit(1)
+" 2>/dev/null; then
+      echo "$node"
+      return
+    fi
+  done
+  echo "$local_node"
+}
+
+node_to_ip() {
+  local node="$1"
+  # Try /etc/hosts first
+  local ip
+  ip=$(getent hosts "$node" 2>/dev/null | awk '{print $1; exit}')
+  [ -n "$ip" ] && echo "$ip" && return
+  # Parse corosync.conf for the ring0_addr matching this node name
+  ip=$(python3 -c "
+import re, sys
+try:
+    txt = open('/etc/pve/corosync.conf').read()
+    for block in re.findall(r'node\s*\{[^}]+\}', txt, re.DOTALL):
+        nm = re.search(r'name:\s*(\S+)', block)
+        addr = re.search(r'ring0_addr:\s*(\S+)', block)
+        if nm and addr and nm.group(1) == '$node':
+            print(addr.group(1))
+            break
+except: pass
+" 2>/dev/null)
+  [ -n "$ip" ] && echo "$ip" && return
+  # Fall back to node name as-is
+  echo "$node"
+}
+
+run_on_node() {
+  local node="$1"; shift
+  local local_node
+  local_node=$(get_local_node)
+  if [ "$node" = "$local_node" ]; then
+    "$@"
+  else
+    local ip cmd
+    ip=$(node_to_ip "$node")
+    cmd=$(printf '%q ' "$@")
+    ssh -o BatchMode=yes -o StrictHostKeyChecking=no root@"$ip" "$cmd"
+  fi
+}
+
+# Populate global _CT_NODE, _CT_STATUS, _CT_HOSTNAME, _CT_TAGS indexed by CTID.
+# Queries each cluster node individually via pvesh /nodes/{node}/lxc — the
+# Proxmox API proxies these requests cluster-wide, so this works from any node
+# and is reliable regardless of whether /cluster/resources is available.
+_load_ct_data() {
+  declare -gA _CT_NODE=() _CT_STATUS=() _CT_HOSTNAME=() _CT_TAGS=()
+  local local_node nodes all_parsed=""
+  local_node=$(get_local_node)
+
+  # Get all cluster nodes; fall back to local node on standalone installs
+  nodes=$(get_cluster_nodes 2>/dev/null)
+  [ -z "$nodes" ] && nodes="$local_node"
+
+  for node in $nodes; do
+    local raw node_parsed
+    raw=$(pvesh get /nodes/"$node"/lxc --output-format json 2>/dev/null) || raw="[]"
+    node_parsed=$(echo "$raw" | python3 -c "
+import sys,json
+node='$node'
+try:
+    for r in json.load(sys.stdin):
+        print('{}\t{}\t{}\t{}\t{}'.format(
+            r.get('vmid',''), node, r.get('status',''),
+            r.get('name',''), r.get('tags') or ''))
+except: pass
+" 2>/dev/null)
+    [ -n "$node_parsed" ] && all_parsed="${all_parsed}${all_parsed:+$'\n'}${node_parsed}"
+  done
+
+  while IFS=$'\t' read -r ctid node status name tags; do
+    [ -z "$ctid" ] && continue
+    _CT_NODE[$ctid]="${node:-$local_node}"
+    _CT_STATUS[$ctid]="$status"
+    _CT_HOSTNAME[$ctid]="$name"
+    _CT_TAGS[$ctid]="$tags"
+  done <<< "$all_parsed"
+}
+
+# Find which cluster node holds a given CTID (container or template).
+# Prints the node name to stdout; prints nothing if not found.
+_find_template_node() {
+  local ctid="$1"
+  local nodes node
+  nodes=$(get_cluster_nodes 2>/dev/null)
+  [ -z "$nodes" ] && nodes=$(get_local_node)
+  for node in $nodes; do
+    if pvesh get /nodes/"$node"/lxc --output-format json 2>/dev/null | \
+        python3 -c "
+import sys,json
+for r in json.load(sys.stdin):
+    if str(r.get('vmid','')) == '${ctid}':
+        raise SystemExit(0)
+raise SystemExit(1)
+" 2>/dev/null; then
+      echo "$node"
+      return
+    fi
+  done
+}
+
 # ============================================================
 # MODULE: Create Template
 # ============================================================
 
 cmd_create_template() {
+  _load_config
   section_header "Alpine LXC Template Creator"
   echo -e "${YELLOW}Note: This script only supports local storage options${NC}"
   echo ""
@@ -145,8 +299,9 @@ cmd_create_template() {
   while true; do
     read -p "Template ID (e.g., 150, 9000): " TEMPLATE_ID
     if [[ "$TEMPLATE_ID" =~ ^[0-9]+$ ]]; then
-      if pct status $TEMPLATE_ID &>/dev/null; then
-        echo -e "${RED}Error: CT ${TEMPLATE_ID} already exists${NC}"
+      _exists_on=$(_find_template_node "$TEMPLATE_ID")
+      if [ -n "$_exists_on" ]; then
+        echo -e "${RED}Error: CT ${TEMPLATE_ID} already exists (on ${_exists_on})${NC}"
       else
         break
       fi
@@ -173,7 +328,7 @@ cmd_create_template() {
   # 3. Storage
   echo ""
   echo -e "${BLUE}3. Storage Configuration${NC}"
-  pick_storage
+  pick_storage "$NODE"
 
   # 4. Alpine Version
   echo ""
@@ -239,20 +394,21 @@ cmd_create_template() {
   fi
 
   echo ""
-  echo -e "${GREEN}Creating Alpine LXC template (CT ${TEMPLATE_ID})...${NC}"
+  echo -e "${GREEN}Creating Alpine LXC template (CT ${TEMPLATE_ID}) on ${NODE}...${NC}"
 
-  echo "Downloading Alpine template if needed..."
-  pveam download local "${ALPINE_TEMPLATE}" 2>/dev/null || true
+  echo "Downloading Alpine template to ${NODE} if needed..."
+  run_on_node "$NODE" pveam update 2>/dev/null || true
+  run_on_node "$NODE" pveam download local "${ALPINE_TEMPLATE}" 2>/dev/null || true
 
-  if ! pveam list local | grep -q "${ALPINE_TEMPLATE}"; then
-    echo -e "${RED}Error: Template ${ALPINE_TEMPLATE} not found in local storage${NC}"
+  if ! run_on_node "$NODE" pveam list local | grep -q "${ALPINE_TEMPLATE}"; then
+    echo -e "${RED}Error: Template ${ALPINE_TEMPLATE} not found in local storage on ${NODE}${NC}"
     echo "Available templates:"
-    pveam list local
+    run_on_node "$NODE" pveam list local
     return 1
   fi
 
-  echo "Creating base container..."
-  pct create $TEMPLATE_ID local:vztmpl/${ALPINE_TEMPLATE} \
+  echo "Creating base container on ${NODE}..."
+  run_on_node "$NODE" pct create $TEMPLATE_ID local:vztmpl/${ALPINE_TEMPLATE} \
     --hostname alpine-template \
     --memory $MEMORY \
     --cores $CORES \
@@ -264,11 +420,11 @@ cmd_create_template() {
     --features nesting=1
 
   echo "Starting container to configure..."
-  pct start $TEMPLATE_ID
+  run_on_node "$NODE" pct start $TEMPLATE_ID
   sleep 10
 
   echo "Installing base packages..."
-  pct exec $TEMPLATE_ID -- sh -c "
+  run_on_node "$NODE" pct exec $TEMPLATE_ID -- sh -c "
     apk update
     apk add curl wget bind-tools bash jq python3 py3-pip dcron nano vim openrc ca-certificates
 
@@ -284,8 +440,11 @@ cmd_create_template() {
   if [ -n "${CERT_PATH:-}" ] && [ -f "$CERT_PATH" ]; then
     echo "Installing TLS inspection certificate..."
     CERT_FILENAME=$(basename "$CERT_PATH")
-    pct push $TEMPLATE_ID "$CERT_PATH" "/tmp/${CERT_FILENAME}"
-    pct exec $TEMPLATE_ID -- sh -c "
+    # Stream the cert file into the container via pct exec stdin — avoids needing
+    # pct push (which requires the file to already be on the target node).
+    run_on_node "$NODE" sh -c "cat | pct exec $TEMPLATE_ID -- sh -c 'cat > /tmp/${CERT_FILENAME}'" \
+      < "$CERT_PATH"
+    run_on_node "$NODE" pct exec $TEMPLATE_ID -- sh -c "
       mkdir -p /usr/local/share/ca-certificates
       cp /tmp/${CERT_FILENAME} /usr/local/share/ca-certificates/${CERT_FILENAME}
       update-ca-certificates 2>/dev/null || \
@@ -296,8 +455,8 @@ cmd_create_template() {
   fi
 
   echo "Stopping and converting to template..."
-  pct stop $TEMPLATE_ID
-  pct template $TEMPLATE_ID
+  run_on_node "$NODE" pct stop $TEMPLATE_ID
+  run_on_node "$NODE" pct template $TEMPLATE_ID
 
   echo ""
   echo -e "${GREEN}=========================================="
@@ -313,6 +472,7 @@ cmd_create_template() {
 # ============================================================
 
 cmd_deploy_containers() {
+  _load_config
   section_header "Lab Container Deployment"
 
   # 1. Template Selection
@@ -330,33 +490,115 @@ cmd_deploy_containers() {
     read -p "Template ID to clone from [${TEMPLATE_ID:-}]: " input
     TEMPLATE_ID="${input:-${TEMPLATE_ID:-}}"
     if [[ "$TEMPLATE_ID" =~ ^[0-9]+$ ]]; then
-      if pct status $TEMPLATE_ID &>/dev/null; then
-        if pct config $TEMPLATE_ID | grep -q "template: 1"; then
-          break
-        else
-          echo -e "${RED}Error: CT ${TEMPLATE_ID} is not a template${NC}"
-        fi
+      _tmpl_node=$(_find_template_node "$TEMPLATE_ID")
+      if [ -z "$_tmpl_node" ]; then
+        echo -e "${RED}Error: CT ${TEMPLATE_ID} does not exist on any cluster node${NC}"
+      elif ! run_on_node "$_tmpl_node" pct config $TEMPLATE_ID 2>/dev/null | grep -q "template: 1"; then
+        echo -e "${RED}Error: CT ${TEMPLATE_ID} on ${_tmpl_node} is not a template${NC}"
       else
-        echo -e "${RED}Error: CT ${TEMPLATE_ID} does not exist${NC}"
+        echo "  Found template CT ${TEMPLATE_ID} on ${_tmpl_node}"
+        break
       fi
     else
       echo -e "${RED}Please enter a valid numeric ID${NC}"
     fi
   done
 
-  # 2. Storage
+  # 2. Cluster Nodes
   echo ""
-  echo -e "${BLUE}2. Storage Configuration${NC}"
-  pick_storage
+  echo -e "${BLUE}2. Cluster Nodes${NC}"
+  echo "Fetching node info..."
+  echo ""
 
-  # 3. Network
+  declare -a ALL_NODES=()
+  while IFS= read -r n; do
+    [ -n "$n" ] && ALL_NODES+=("$n")
+  done < <(get_cluster_nodes)
+
+  if [ ${#ALL_NODES[@]} -eq 0 ]; then
+    ALL_NODES=("$(get_local_node)")
+    echo -e "${YELLOW}Could not detect cluster nodes; using local node: ${ALL_NODES[0]}${NC}"
+  fi
+
+  # Build resource table
+  declare -A NODE_TOTAL=()
+  declare -A NODE_USED=()
+  declare -A NODE_FREE=()
+  declare -A NODE_CPUS=()
+  declare -A NODE_CPU_PCT=()
+  declare -A NODE_CT_COUNT=()
+
+  printf "  %-10s %-12s %-12s %-12s %-8s %-8s %-6s\n" \
+    "Node" "RAM Total" "RAM Used" "RAM Free" "CPUs" "CPU%" "CTs"
+  echo "  ----------------------------------------------------------------------"
+
+  for node in "${ALL_NODES[@]}"; do
+    local_res=$(get_node_resources "$node")
+    stats=$(echo "$local_res" | head -1)
+    ct_count=$(echo "$local_res" | tail -1)
+    read -r total used free cpus cpupct <<< "$stats"
+    NODE_TOTAL[$node]="${total:-0}"
+    NODE_USED[$node]="${used:-0}"
+    NODE_FREE[$node]="${free:-0}"
+    NODE_CPUS[$node]="${cpus:-0}"
+    NODE_CPU_PCT[$node]="${cpupct:-0}"
+    NODE_CT_COUNT[$node]="${ct_count:-0}"
+    total_gb=$(( ${total:-0} / 1024 ))
+    used_gb=$(( ${used:-0} / 1024 ))
+    free_gb=$(( ${free:-0} / 1024 ))
+    printf "  %-10s %-12s %-12s %-12s %-8s %-8s %-6s\n" \
+      "$node" "${total_gb} GB" "${used_gb} GB" "${free_gb} GB" \
+      "${cpus:-?}" "${cpupct:-?}%" "${ct_count:-?}"
+  done
   echo ""
-  echo -e "${BLUE}3. Network Configuration${NC}"
+
+  declare -a SELECTED_NODES=()
+
+  if [ ${#ALL_NODES[@]} -eq 1 ]; then
+    SELECTED_NODES=("${ALL_NODES[@]}")
+    echo "  Single node detected: ${SELECTED_NODES[0]}"
+  else
+    echo "  1) All nodes (${#ALL_NODES[@]})"
+    echo "  2) Select specific nodes"
+    read -p "  Select [1-2] (default: 1): " node_sel_choice
+
+    case "${node_sel_choice:-1}" in
+      2)
+        echo "  Available nodes: ${ALL_NODES[*]}"
+        echo "  Saved nodes: ${NODES:-}"
+        read -p "  Enter node names (space or comma-separated) [${NODES:-}]: " node_input
+        node_input="${node_input:-${NODES:-}}"
+        node_input=$(echo "$node_input" | tr ',' ' ')
+        for n in $node_input; do
+          n=$(echo "$n" | xargs)
+          [ -n "$n" ] && SELECTED_NODES+=("$n")
+        done
+        if [ ${#SELECTED_NODES[@]} -eq 0 ]; then
+          SELECTED_NODES=("${ALL_NODES[@]}")
+        fi
+        ;;
+      *)
+        SELECTED_NODES=("${ALL_NODES[@]}")
+        ;;
+    esac
+  fi
+
+  NODES="${SELECTED_NODES[*]}"
+  echo "  Deploying to: ${SELECTED_NODES[*]}"
+
+  # 3. Storage
+  echo ""
+  echo -e "${BLUE}3. Storage Configuration${NC}"
+  pick_storage "${SELECTED_NODES[0]:-$(get_local_node)}"
+
+  # 4. Network
+  echo ""
+  echo -e "${BLUE}4. Network Configuration${NC}"
   read_with_default "Bridge" "${BRIDGE:-vmbr0}" "BRIDGE"
 
-  # 4. Deployment Scope
+  # 5. Deployment Scope
   echo ""
-  echo -e "${BLUE}4. Deployment Scope${NC}"
+  echo -e "${BLUE}5. Deployment Scope${NC}"
   echo "What would you like to deploy?"
   echo "  1) Both Data Center and Branch containers (11 total)"
   echo "  2) Data Center only (6 containers)"
@@ -373,39 +615,71 @@ cmd_deploy_containers() {
     *) DEPLOY_HQ=true; DEPLOY_BRANCH=true ;;
   esac
 
-  # 5. HQ Config
+  # 6. Distribution Mode (only when multiple nodes selected)
+  DIST_MODE="auto"
+  declare -A MANUAL_NODE_HQ=()
+  declare -A MANUAL_NODE_BRANCH=()
+
+  if [ ${#SELECTED_NODES[@]} -gt 1 ]; then
+    echo ""
+    echo -e "${BLUE}6. Distribution${NC}"
+    echo "  1) Auto-balanced by free RAM (recommended)"
+    echo "  2) Manual — assign each group to a specific node"
+    read -p "  Select [1-2] (default: 1): " dist_choice
+
+    case "${dist_choice:-1}" in
+      2)
+        DIST_MODE="manual"
+        if $DEPLOY_HQ; then
+          read -p "  Data Center containers → node: " hq_node
+          hq_node="${hq_node:-${SELECTED_NODES[0]}}"
+          for i in 0 1 2 3 4 5; do
+            MANUAL_NODE_HQ[$i]="$hq_node"
+          done
+        fi
+        if $DEPLOY_BRANCH; then
+          read -p "  Branch containers → node: " br_node
+          br_node="${br_node:-${SELECTED_NODES[0]}}"
+          for i in 0 1 2 3 4; do
+            MANUAL_NODE_BRANCH[$i]="$br_node"
+          done
+        fi
+        ;;
+      *)
+        DIST_MODE="auto"
+        ;;
+    esac
+  fi
+
+  # 7. HQ Config
   if $DEPLOY_HQ; then
     echo ""
-    echo -e "${BLUE}5. Data Center Configuration${NC}"
+    echo -e "${BLUE}7. Data Center Configuration${NC}"
     read_with_default "Starting CTID for Data Center" "${HQ_START:-200}" "HQ_START"
     read_with_default "Data Center VLAN tag" "${VLAN_HQ:-200}" "VLAN_HQ"
 
     echo -e "${CYAN}Data Center containers will be:${NC}"
-    echo "  CT ${HQ_START}: hq-fileserver"
-    echo "  CT $((HQ_START+1)): hq-webapp"
-    echo "  CT $((HQ_START+2)): hq-email"
-    echo "  CT $((HQ_START+3)): hq-monitoring (512MB)"
-    echo "  CT $((HQ_START+4)): hq-devops (512MB)"
-    echo "  CT $((HQ_START+5)): hq-database"
+    echo "  CT ${HQ_START}: hq-fileserver (256 MB)"
+    echo "  CT $((HQ_START+1)): hq-webapp (256 MB)"
+    echo "  CT $((HQ_START+2)): hq-email (256 MB)"
+    echo "  CT $((HQ_START+3)): hq-monitoring (512 MB)"
+    echo "  CT $((HQ_START+4)): hq-devops (512 MB)"
+    echo "  CT $((HQ_START+5)): hq-database (256 MB)"
   fi
 
-  # 6. Branch Config
+  # 8. Branch Config
   if $DEPLOY_BRANCH; then
     echo ""
-    if $DEPLOY_HQ; then
-      echo -e "${BLUE}6. Branch UserNet Configuration${NC}"
-    else
-      echo -e "${BLUE}5. Branch UserNet Configuration${NC}"
-    fi
+    echo -e "${BLUE}8. Branch UserNet Configuration${NC}"
     read_with_default "Starting CTID for Branch" "${BRANCH_START:-220}" "BRANCH_START"
     read_with_default "Branch VLAN tag" "${VLAN_BRANCH:-201}" "VLAN_BRANCH"
 
     echo -e "${CYAN}Branch containers will be:${NC}"
-    echo "  CT ${BRANCH_START}: branch-worker1"
-    echo "  CT $((BRANCH_START+1)): branch-worker2"
-    echo "  CT $((BRANCH_START+2)): branch-sales"
-    echo "  CT $((BRANCH_START+3)): branch-dev (512MB)"
-    echo "  CT $((BRANCH_START+4)): branch-exec"
+    echo "  CT ${BRANCH_START}: branch-worker1 (256 MB)"
+    echo "  CT $((BRANCH_START+1)): branch-worker2 (256 MB)"
+    echo "  CT $((BRANCH_START+2)): branch-sales (256 MB)"
+    echo "  CT $((BRANCH_START+3)): branch-dev (512 MB)"
+    echo "  CT $((BRANCH_START+4)): branch-exec (256 MB)"
   fi
 
   declare -A HQ_CONTAINERS=(
@@ -425,11 +699,151 @@ cmd_deploy_containers() {
     [4]="branch-exec"
   )
 
+  # Build full container list with CTID, hostname, profile, VLAN, memory
+  # Format: CTID hostname vlan mem
+  declare -a DEPLOY_LIST=()
+  if $DEPLOY_HQ; then
+    for OFFSET in 0 1 2 3 4 5; do
+      CTID=$((HQ_START + OFFSET))
+      HOSTNAME="${HQ_CONTAINERS[$OFFSET]}"
+      if [[ "$HOSTNAME" =~ (monitoring|devops) ]]; then MEM=512; else MEM=256; fi
+      DEPLOY_LIST+=("${CTID} ${HOSTNAME} ${VLAN_HQ} ${MEM} hq ${OFFSET}")
+    done
+  fi
+  if $DEPLOY_BRANCH; then
+    for OFFSET in 0 1 2 3 4; do
+      CTID=$((BRANCH_START + OFFSET))
+      HOSTNAME="${BRANCH_CONTAINERS[$OFFSET]}"
+      if [[ "$HOSTNAME" == "branch-dev" ]]; then MEM=512; else MEM=256; fi
+      DEPLOY_LIST+=("${CTID} ${HOSTNAME} ${VLAN_BRANCH} ${MEM} branch ${OFFSET}")
+    done
+  fi
+
+  # Assign each container to a node
+  declare -A CTID_NODES=()
+
+  if [ ${#SELECTED_NODES[@]} -eq 1 ]; then
+    for entry in "${DEPLOY_LIST[@]}"; do
+      read -r ctid _ _ _ _ _ <<< "$entry"
+      CTID_NODES[$ctid]="${SELECTED_NODES[0]}"
+    done
+  elif [ "$DIST_MODE" = "manual" ]; then
+    for entry in "${DEPLOY_LIST[@]}"; do
+      read -r ctid hostname vlan mem group offset <<< "$entry"
+      if [ "$group" = "hq" ]; then
+        CTID_NODES[$ctid]="${MANUAL_NODE_HQ[$offset]:-${SELECTED_NODES[0]}}"
+      else
+        CTID_NODES[$ctid]="${MANUAL_NODE_BRANCH[$offset]:-${SELECTED_NODES[0]}}"
+      fi
+    done
+  else
+    # Auto-balance: sort by memory descending, assign to node with most free RAM
+    declare -A avail_ram=()
+    for node in "${SELECTED_NODES[@]}"; do
+      avail_ram[$node]="${NODE_FREE[$node]:-0}"
+    done
+
+    # Sort DEPLOY_LIST by memory descending (512 first)
+    declare -a sorted_deploy=()
+    # Get 512MB containers first, then 256MB
+    for entry in "${DEPLOY_LIST[@]}"; do
+      read -r _ _ _ mem _ _ <<< "$entry"
+      [ "$mem" -eq 512 ] && sorted_deploy+=("$entry")
+    done
+    for entry in "${DEPLOY_LIST[@]}"; do
+      read -r _ _ _ mem _ _ <<< "$entry"
+      [ "$mem" -eq 256 ] && sorted_deploy+=("$entry")
+    done
+
+    for entry in "${sorted_deploy[@]}"; do
+      read -r ctid _ _ mem _ _ <<< "$entry"
+      # Pick node with most available RAM
+      best_node="${SELECTED_NODES[0]}"
+      best_ram="${avail_ram[${SELECTED_NODES[0]}]:-0}"
+      for node in "${SELECTED_NODES[@]}"; do
+        if [ "${avail_ram[$node]:-0}" -gt "$best_ram" ]; then
+          best_ram="${avail_ram[$node]}"
+          best_node="$node"
+        fi
+      done
+      CTID_NODES[$ctid]="$best_node"
+      avail_ram[$best_node]=$(( ${avail_ram[$best_node]:-0} - mem ))
+    done
+  fi
+
+  # Resource Feasibility Check
+  echo ""
+  echo -e "${BLUE}Resource Feasibility Check:${NC}"
+  printf "  %-10s %-12s %-14s %-12s %-10s\n" "Node" "Assigned" "After Use" "Headroom" "Status"
+  echo "  ---------------------------------------------------------------"
+
+  ABORT_DEPLOY=false
+  declare -A NODE_ASSIGNED_MEM=()
+  for node in "${SELECTED_NODES[@]}"; do
+    NODE_ASSIGNED_MEM[$node]=0
+  done
+  for entry in "${DEPLOY_LIST[@]}"; do
+    read -r ctid _ _ mem _ _ <<< "$entry"
+    target="${CTID_NODES[$ctid]}"
+    NODE_ASSIGNED_MEM[$target]=$(( ${NODE_ASSIGNED_MEM[$target]:-0} + mem ))
+  done
+
+  for node in "${SELECTED_NODES[@]}"; do
+    total_mb="${NODE_TOTAL[$node]:-0}"
+    used_mb="${NODE_USED[$node]:-0}"
+    assigned_mb="${NODE_ASSIGNED_MEM[$node]:-0}"
+    if [ "$total_mb" -gt 0 ]; then
+      after_mb=$(( used_mb + assigned_mb ))
+      headroom_mb=$(( total_mb - after_mb ))
+      after_pct=$(( after_mb * 100 / total_mb ))
+    else
+      after_mb=0; headroom_mb=0; after_pct=0
+    fi
+    if [ "$after_pct" -ge 95 ]; then
+      status="${RED}✗ OVER 95%${NC}"
+      ABORT_DEPLOY=true
+    elif [ "$after_pct" -ge 80 ]; then
+      status="${YELLOW}⚠ WARN (${after_pct}%)${NC}"
+    else
+      status="${GREEN}✓ OK (${after_pct}%)${NC}"
+    fi
+    printf "  %-10s %-12s %-14s %-12s " \
+      "$node" "${assigned_mb} MB" "${after_mb} MB" "${headroom_mb} MB"
+    echo -e "$status"
+  done
+
+  if $ABORT_DEPLOY; then
+    echo ""
+    echo -e "${RED}Error: One or more nodes would exceed 95% RAM utilization. Aborting.${NC}"
+    echo "Reduce deployment scope or select additional nodes."
+    return 1
+  fi
+
+  # Assignment Preview
+  echo ""
+  echo -e "${BLUE}Container Assignment:${NC}"
+  printf "  %-8s %-20s %-14s %-10s %-6s\n" "CTID" "Hostname" "Profile" "Node" "RAM"
+  echo "  ---------------------------------------------------------------"
+  for entry in "${DEPLOY_LIST[@]}"; do
+    read -r ctid hostname vlan mem group offset <<< "$entry"
+    target="${CTID_NODES[$ctid]}"
+    if [ "$group" = "hq" ]; then
+      profiles=("fileserver" "webapp" "email" "monitoring" "devops" "database")
+      profile="${profiles[$offset]}"
+    else
+      profiles=("office-worker" "office-worker" "sales" "developer" "executive")
+      profile="${profiles[$offset]}"
+    fi
+    printf "  %-8s %-20s %-14s %-10s %-6s\n" \
+      "$ctid" "$hostname" "$profile" "$target" "${mem} MB"
+  done
+
   # Summary
   section_header "Deployment Summary"
   echo "Source Template: CT ${TEMPLATE_ID}"
   echo "Storage:         ${STORAGE}"
   echo "Bridge:          ${BRIDGE}"
+  echo "Nodes:           ${SELECTED_NODES[*]}"
 
   if $DEPLOY_HQ; then
     echo ""
@@ -455,97 +869,90 @@ cmd_deploy_containers() {
     return 0
   fi
 
-  # Deploy HQ
-  if $DEPLOY_HQ; then
-    echo ""
-    echo -e "${GREEN}=========================================="
-    echo "Deploying Data Center Containers"
-    echo -e "==========================================${NC}"
+  # Locate the template in the cluster and determine the clone strategy.
+  LOCAL_NODE=$(get_local_node)
+  TMPL_NODE=$(_find_template_node "$TEMPLATE_ID")
+  [ -z "$TMPL_NODE" ] && TMPL_NODE="$LOCAL_NODE"
+  TMPL_POOL=$(run_on_node "$TMPL_NODE" pct config "$TEMPLATE_ID" 2>/dev/null | \
+    grep '^rootfs:' | sed 's/rootfs: *//' | cut -d: -f1)
+  TMPL_SHARED=$(pvesh get /storage/"$TMPL_POOL" --output-format json 2>/dev/null | \
+    python3 -c "
+import sys,json
+try: print('1' if json.load(sys.stdin).get('shared') else '0')
+except: print('0')
+" 2>/dev/null || echo "0")
 
-    for OFFSET in "${!HQ_CONTAINERS[@]}"; do
-      CTID=$((HQ_START + OFFSET))
-      HOSTNAME="${HQ_CONTAINERS[$OFFSET]}"
-
-      if pct status $CTID &>/dev/null; then
-        echo -e "${YELLOW}⚠ CT ${CTID} already exists, skipping ${HOSTNAME}${NC}"
-        continue
-      fi
-
-      echo "Creating CT ${CTID}: ${HOSTNAME}..."
-
-      pct clone $TEMPLATE_ID $CTID \
-        --hostname $HOSTNAME \
-        --full 1 \
-        --storage $STORAGE
-
-      pct set $CTID --net0 name=eth0,bridge=${BRIDGE},tag=$VLAN_HQ,firewall=1,ip=dhcp
-
-      if [[ "$HOSTNAME" =~ (monitoring|devops) ]]; then
-        pct set $CTID --memory 512
-      else
-        pct set $CTID --memory 256
-      fi
-
-      pct set $CTID --onboot 1
-      pct set $CTID --tags lab-managed
-      echo -e "${GREEN}✓ CT ${CTID} (${HOSTNAME}) created${NC}"
-    done
+  # Deploy containers
+  echo ""
+  echo -e "${GREEN}=========================================="
+  echo "Deploying Containers"
+  echo -e "==========================================${NC}"
+  if [ "$TMPL_SHARED" = "1" ]; then
+    echo "(Template CT ${TEMPLATE_ID} on ${TMPL_NODE} — shared storage, cloning on each target node)"
+  else
+    echo "(Template CT ${TEMPLATE_ID} on ${TMPL_NODE} — local storage, will clone-and-migrate for remote targets)"
   fi
+  echo ""
 
-  # Deploy Branch
-  if $DEPLOY_BRANCH; then
-    echo ""
-    echo -e "${GREEN}=========================================="
-    echo "Deploying Branch UserNet Containers"
-    echo -e "==========================================${NC}"
+  for entry in "${DEPLOY_LIST[@]}"; do
+    read -r CTID HOSTNAME VLAN MEM group offset <<< "$entry"
+    TARGET_NODE="${CTID_NODES[$CTID]}"
 
-    for OFFSET in "${!BRANCH_CONTAINERS[@]}"; do
-      CTID=$((BRANCH_START + OFFSET))
-      HOSTNAME="${BRANCH_CONTAINERS[$OFFSET]}"
+    # Check if CT already exists cluster-wide using per-node queries
+    ct_exists=false
+    if [ -n "$(_find_template_node "$CTID")" ]; then
+      ct_exists=true
+    fi
+    if $ct_exists; then
+      echo -e "${YELLOW}⚠ CT ${CTID} already exists, skipping ${HOSTNAME}${NC}"
+      continue
+    fi
 
-      if pct status $CTID &>/dev/null; then
-        echo -e "${YELLOW}⚠ CT ${CTID} already exists, skipping ${HOSTNAME}${NC}"
-        continue
-      fi
+    echo "Creating CT ${CTID}: ${HOSTNAME} → ${TARGET_NODE}..."
 
-      echo "Creating CT ${CTID}: ${HOSTNAME}..."
+    # Determine where to run pct clone:
+    #   Shared storage → clone on the target (it can reach the template directly)
+    #   Local storage, same node as template → clone on that node, no migration
+    #   Local storage, different node → clone on template's node, then migrate
+    if [ "$TMPL_SHARED" = "1" ]; then
+      CLONE_NODE="$TARGET_NODE"
+    else
+      CLONE_NODE="$TMPL_NODE"
+    fi
 
-      pct clone $TEMPLATE_ID $CTID \
-        --hostname $HOSTNAME \
-        --full 1 \
-        --storage $STORAGE
+    run_on_node "$CLONE_NODE" pct clone $TEMPLATE_ID $CTID \
+      --hostname $HOSTNAME \
+      --full 1 \
+      --storage $STORAGE
+    run_on_node "$CLONE_NODE" pct set $CTID \
+      --net0 name=eth0,bridge=${BRIDGE},tag=${VLAN},firewall=1,ip=dhcp
+    run_on_node "$CLONE_NODE" pct set $CTID --memory $MEM --onboot 1 --tags lab-managed
 
-      pct set $CTID --net0 name=eth0,bridge=${BRIDGE},tag=$VLAN_BRANCH,firewall=1,ip=dhcp
+    if [ "$TMPL_SHARED" != "1" ] && [ "$CLONE_NODE" != "$TARGET_NODE" ]; then
+      echo "  Migrating CT ${CTID} from ${CLONE_NODE} to ${TARGET_NODE}..."
+      run_on_node "$CLONE_NODE" pct migrate $CTID $TARGET_NODE --target-storage $STORAGE
+    fi
 
-      if [[ "$HOSTNAME" == "branch-dev" ]]; then
-        pct set $CTID --memory 512
-      else
-        pct set $CTID --memory 256
-      fi
-
-      pct set $CTID --onboot 1
-      pct set $CTID --tags lab-managed
-      echo -e "${GREEN}✓ CT ${CTID} (${HOSTNAME}) created${NC}"
-    done
-  fi
+    echo -e "${GREEN}✓ CT ${CTID} (${HOSTNAME}) created on ${TARGET_NODE}${NC}"
+  done
 
   # Final Summary
   section_header "✓ Deployment Complete"
 
   if $DEPLOY_HQ; then
     echo -e "${CYAN}Data Center (VLAN ${VLAN_HQ}):${NC}"
-    for OFFSET in "${!HQ_CONTAINERS[@]}"; do
+    for OFFSET in 0 1 2 3 4 5; do
       CTID=$((HQ_START + OFFSET))
-      echo "  CT ${CTID}: ${HQ_CONTAINERS[$OFFSET]}"
+      echo "  CT ${CTID}: ${HQ_CONTAINERS[$OFFSET]} → ${CTID_NODES[$CTID]}"
     done
   fi
 
   if $DEPLOY_BRANCH; then
     echo ""
     echo -e "${CYAN}Branch UserNet (VLAN ${VLAN_BRANCH}):${NC}"
-    for OFFSET in "${!BRANCH_CONTAINERS[@]}"; do
+    for OFFSET in 0 1 2 3 4; do
       CTID=$((BRANCH_START + OFFSET))
-      echo "  CT ${CTID}: ${BRANCH_CONTAINERS[$OFFSET]}"
+      echo "  CT ${CTID}: ${BRANCH_CONTAINERS[$OFFSET]} → ${CTID_NODES[$CTID]}"
     done
   fi
 
@@ -559,41 +966,49 @@ cmd_deploy_containers() {
 # ============================================================
 
 cmd_start_containers() {
+  _load_config
   section_header "Container Startup Manager"
 
   echo -e "${BLUE}1. Current Container Status${NC}"
-  echo "Scanning for containers..."
+  echo "Scanning for containers (cluster-wide)..."
   echo ""
 
-  ALL_CONTAINERS=$(pct list 2>/dev/null | awk 'NR>1 {print $1}' | sort -n)
+  _load_ct_data
 
-  if [ -z "$ALL_CONTAINERS" ]; then
-    echo -e "${RED}No containers found on this system${NC}"
+  if [ ${#_CT_NODE[@]} -eq 0 ]; then
+    echo -e "${RED}No containers found${NC}"
     return 1
   fi
 
-  printf "%-8s %-20s %-12s\n" "CTID" "Hostname" "Status"
-  echo "----------------------------------------"
+  printf "%-8s %-20s %-12s %-10s\n" "CTID" "Hostname" "Status" "Node"
+  echo "------------------------------------------------"
 
   declare -a STOPPED_CONTAINERS=()
   declare -a RUNNING_CONTAINERS=()
 
-  for CTID in $ALL_CONTAINERS; do
-    pct config $CTID 2>/dev/null | grep -q "tags:.*lab-managed" || continue
-    STATUS=$(get_status $CTID)
-    HOSTNAME=$(get_hostname $CTID)
+  for CTID in $(echo "${!_CT_NODE[@]}" | tr ' ' '\n' | sort -n); do
+    tags="${_CT_TAGS[$CTID]:-}"
+    name="${_CT_HOSTNAME[$CTID]:-}"
+    # Filter to lab-managed containers
+    if [[ "$tags" != *"lab-managed"* ]] && \
+       [[ "$name" != hq-* ]] && [[ "$name" != branch-* ]]; then
+      continue
+    fi
+    STATUS="${_CT_STATUS[$CTID]:-stopped}"
+    HOSTNAME="${_CT_HOSTNAME[$CTID]:-unknown}"
+    NODE_OF_CT="${_CT_NODE[$CTID]:-}"
 
     if [ "$STATUS" = "running" ]; then
-      printf "%-8s %-20s ${GREEN}%-12s${NC}\n" "$CTID" "$HOSTNAME" "Running"
+      printf "%-8s %-20s ${GREEN}%-12s${NC} %-10s\n" "$CTID" "$HOSTNAME" "Running" "$NODE_OF_CT"
       RUNNING_CONTAINERS+=($CTID)
-    elif [ "$STATUS" = "stopped" ]; then
-      printf "%-8s %-20s ${YELLOW}%-12s${NC}\n" "$CTID" "$HOSTNAME" "Stopped"
+    else
+      printf "%-8s %-20s ${YELLOW}%-12s${NC} %-10s\n" "$CTID" "$HOSTNAME" "Stopped" "$NODE_OF_CT"
       STOPPED_CONTAINERS+=($CTID)
     fi
   done
 
   echo ""
-  echo "Summary: ${GREEN}${#RUNNING_CONTAINERS[@]} running${NC}, ${YELLOW}${#STOPPED_CONTAINERS[@]} stopped${NC}"
+  echo -e "Summary: ${GREEN}${#RUNNING_CONTAINERS[@]} running${NC}, ${YELLOW}${#STOPPED_CONTAINERS[@]} stopped${NC}"
 
   if [ ${#STOPPED_CONTAINERS[@]} -eq 0 ]; then
     echo ""
@@ -606,13 +1021,22 @@ cmd_start_containers() {
   echo -e "${BLUE}2. Container Selection${NC}"
   echo "What would you like to start?"
   echo "  1) All stopped containers (${#STOPPED_CONTAINERS[@]} total)"
-  echo "  2) Data Center containers only (specify range)"
-  echo "  3) Branch containers only (specify range)"
+  echo "  2) Data Center containers only"
+  echo "  3) Branch containers only"
   echo "  4) Specific containers (enter CTIDs)"
   echo "  5) Range of containers (e.g., 200-205)"
   read -p "Select option [1-5] (default: 1): " selection_choice
 
   declare -a TARGET_CONTAINERS=()
+
+  _cluster_ct_status() {
+    local id="$1"
+    if [ -n "${_CT_STATUS[$id]:-}" ]; then
+      echo "${_CT_STATUS[$id]}"
+    else
+      echo "not-exist"
+    fi
+  }
 
   case "${selection_choice:-1}" in
     1)
@@ -620,11 +1044,15 @@ cmd_start_containers() {
       ;;
 
     2)
-      read_with_default "Data Center starting CTID" "${HQ_START:-200}" "HQ_START"
+      if [ -z "${HQ_START:-}" ]; then
+        read_with_default "Data Center starting CTID" "200" "HQ_START"
+      else
+        echo "  Using Data Center start: ${HQ_START}"
+      fi
       HQ_END=$((HQ_START + 5))
       echo "Checking Data Center containers (${HQ_START}-${HQ_END})..."
       for ctid in $(seq $HQ_START $HQ_END); do
-        status=$(get_status $ctid)
+        status=$(_cluster_ct_status $ctid)
         if [ "$status" = "stopped" ]; then
           TARGET_CONTAINERS+=($ctid)
           echo "  CT ${ctid}: Will start"
@@ -637,11 +1065,15 @@ cmd_start_containers() {
       ;;
 
     3)
-      read_with_default "Branch starting CTID" "${BRANCH_START:-220}" "BRANCH_START"
+      if [ -z "${BRANCH_START:-}" ]; then
+        read_with_default "Branch starting CTID" "220" "BRANCH_START"
+      else
+        echo "  Using Branch start: ${BRANCH_START}"
+      fi
       BRANCH_END=$((BRANCH_START + 4))
       echo "Checking Branch containers (${BRANCH_START}-${BRANCH_END})..."
       for ctid in $(seq $BRANCH_START $BRANCH_END); do
-        status=$(get_status $ctid)
+        status=$(_cluster_ct_status $ctid)
         if [ "$status" = "stopped" ]; then
           TARGET_CONTAINERS+=($ctid)
           echo "  CT ${ctid}: Will start"
@@ -660,7 +1092,7 @@ cmd_start_containers() {
       ctid_input=$(echo "$ctid_input" | tr ',' ' ')
       for ctid in $ctid_input; do
         ctid=$(echo $ctid | xargs)
-        status=$(get_status $ctid)
+        status=$(_cluster_ct_status $ctid)
         if [ "$status" = "stopped" ]; then
           TARGET_CONTAINERS+=($ctid)
         elif [ "$status" = "running" ]; then
@@ -678,7 +1110,7 @@ cmd_start_containers() {
         END="${BASH_REMATCH[2]}"
         echo "Checking containers ${START}-${END}..."
         for ctid in $(seq $START $END); do
-          status=$(get_status $ctid)
+          status=$(_cluster_ct_status $ctid)
           if [ "$status" = "stopped" ]; then
             TARGET_CONTAINERS+=($ctid)
             echo "  CT ${ctid}: Will start"
@@ -733,8 +1165,9 @@ cmd_start_containers() {
   echo ""
   echo -e "${CYAN}Containers:${NC}"
   for CTID in "${TARGET_CONTAINERS[@]}"; do
-    HOSTNAME=$(get_hostname $CTID)
-    echo "  CT ${CTID}: ${HOSTNAME}"
+    HOSTNAME="${_CT_HOSTNAME[$CTID]:-unknown}"
+    CT_NODE="${_CT_NODE[$CTID]:-$(get_local_node)}"
+    echo "  CT ${CTID}: ${HOSTNAME} (${CT_NODE})"
   done
 
   echo ""
@@ -751,9 +1184,10 @@ cmd_start_containers() {
 
   if $SEQUENTIAL; then
     for CTID in "${TARGET_CONTAINERS[@]}"; do
-      HOSTNAME=$(get_hostname $CTID)
-      echo -n "Starting CT ${CTID} (${HOSTNAME})... "
-      if pct start $CTID 2>/dev/null; then
+      HOSTNAME="${_CT_HOSTNAME[$CTID]:-unknown}"
+      CT_NODE="${_CT_NODE[$CTID]:-$(get_local_node)}"
+      echo -n "Starting CT ${CTID} (${HOSTNAME}) on ${CT_NODE}... "
+      if run_on_node "$CT_NODE" pct start $CTID 2>/dev/null; then
         echo -e "${GREEN}✓${NC}"
       else
         echo -e "${RED}✗ Failed${NC}"
@@ -763,9 +1197,10 @@ cmd_start_containers() {
   else
     declare -a PIDS=()
     for CTID in "${TARGET_CONTAINERS[@]}"; do
-      HOSTNAME=$(get_hostname $CTID)
-      echo "Starting CT ${CTID} (${HOSTNAME})..."
-      pct start $CTID 2>/dev/null &
+      HOSTNAME="${_CT_HOSTNAME[$CTID]:-unknown}"
+      CT_NODE="${_CT_NODE[$CTID]:-$(get_local_node)}"
+      echo "Starting CT ${CTID} (${HOSTNAME}) on ${CT_NODE}..."
+      run_on_node "$CT_NODE" pct start $CTID 2>/dev/null &
       PIDS+=($!)
     done
     echo ""
@@ -782,21 +1217,20 @@ cmd_start_containers() {
   fi
 
   section_header "Startup Complete"
-  printf "%-8s %-20s %-12s\n" "CTID" "Hostname" "Status"
-  echo "----------------------------------------"
+  printf "%-8s %-20s %-12s %-10s\n" "CTID" "Hostname" "Status" "Node"
+  echo "------------------------------------------------"
 
   SUCCESS_COUNT=0
   FAILED_COUNT=0
 
   for CTID in "${TARGET_CONTAINERS[@]}"; do
-    STATUS=$(get_status $CTID)
-    HOSTNAME=$(get_hostname $CTID)
-
-    if [ "$STATUS" = "running" ]; then
-      printf "%-8s %-20s ${GREEN}%-12s${NC}\n" "$CTID" "$HOSTNAME" "Running"
+    CT_NODE="${_CT_NODE[$CTID]:-$(get_local_node)}"
+    HOSTNAME="${_CT_HOSTNAME[$CTID]:-unknown}"
+    if run_on_node "$CT_NODE" pct status "$CTID" 2>/dev/null | grep -q "running"; then
+      printf "%-8s %-20s ${GREEN}%-12s${NC} %-10s\n" "$CTID" "$HOSTNAME" "Running" "$CT_NODE"
       ((++SUCCESS_COUNT))
     else
-      printf "%-8s %-20s ${RED}%-12s${NC}\n" "$CTID" "$HOSTNAME" "Failed"
+      printf "%-8s %-20s ${RED}%-12s${NC} %-10s\n" "$CTID" "$HOSTNAME" "Failed" "$CT_NODE"
       ((++FAILED_COUNT))
     fi
   done
@@ -827,30 +1261,166 @@ cmd_start_containers() {
 # ============================================================
 
 cmd_stop_containers() {
+  _load_config
   section_header "Stop Containers"
 
-  declare -a RUNNING=()
-  for ctid in $(pct list 2>/dev/null | awk 'NR>1 && $2=="running" {print $1}' | sort -n); do
-    if pct config $ctid 2>/dev/null | grep -q "tags:.*lab-managed"; then
-      RUNNING+=($ctid)
+  # 1. Current Container Status
+  echo -e "${BLUE}1. Current Container Status${NC}"
+  echo "Scanning for containers (cluster-wide)..."
+  echo ""
+
+  _load_ct_data
+
+  if [ ${#_CT_NODE[@]} -eq 0 ]; then
+    echo -e "${RED}No containers found${NC}"
+    return 1
+  fi
+
+  printf "%-8s %-20s %-12s %-10s\n" "CTID" "Hostname" "Status" "Node"
+  echo "------------------------------------------------"
+
+  declare -a ALL_RUNNING=()
+
+  for CTID in $(echo "${!_CT_NODE[@]}" | tr ' ' '\n' | sort -n); do
+    tags="${_CT_TAGS[$CTID]:-}"
+    name="${_CT_HOSTNAME[$CTID]:-}"
+    if [[ "$tags" != *"lab-managed"* ]] && \
+       [[ "$name" != hq-* ]] && [[ "$name" != branch-* ]]; then
+      continue
+    fi
+    STATUS="${_CT_STATUS[$CTID]:-stopped}"
+    HOSTNAME="${_CT_HOSTNAME[$CTID]:-unknown}"
+    NODE_OF_CT="${_CT_NODE[$CTID]:-}"
+
+    if [ "$STATUS" = "running" ]; then
+      printf "%-8s %-20s ${GREEN}%-12s${NC} %-10s\n" "$CTID" "$HOSTNAME" "Running" "$NODE_OF_CT"
+      ALL_RUNNING+=($CTID)
+    else
+      printf "%-8s %-20s ${YELLOW}%-12s${NC} %-10s\n" "$CTID" "$HOSTNAME" "Stopped" "$NODE_OF_CT"
     fi
   done
 
-  if [ ${#RUNNING[@]} -eq 0 ]; then
-    echo -e "${GREEN}No running lab-managed containers found.${NC}"
+  echo ""
+  echo -e "Summary: ${GREEN}${#ALL_RUNNING[@]} running${NC}"
+
+  if [ ${#ALL_RUNNING[@]} -eq 0 ]; then
+    echo ""
+    echo -e "${GREEN}No running containers found.${NC}"
     return 0
   fi
 
-  printf "%-8s %-20s\n" "CTID" "Hostname"
-  echo "----------------------------"
-  COUNT=0
-  for CTID in "${RUNNING[@]}"; do
-    HOSTNAME=$(get_hostname $CTID)
-    printf "%-8s %-20s\n" "$CTID" "$HOSTNAME"
-    ((++COUNT))
-  done
+  # 2. Container Selection
   echo ""
-  echo "${COUNT} container(s) will be stopped."
+  echo -e "${BLUE}2. Container Selection${NC}"
+  echo "What would you like to stop?"
+  echo "  1) All running containers (${#ALL_RUNNING[@]} total)"
+  echo "  2) Data Center containers only"
+  echo "  3) Branch containers only"
+  echo "  4) Specific containers (enter CTIDs)"
+  echo "  5) Range of containers (e.g., 200-205)"
+  read -p "Select option [1-5] (default: 1): " selection_choice
+
+  declare -a TARGET_CONTAINERS=()
+
+  _cluster_ct_running() {
+    local id="$1"
+    [ "${_CT_STATUS[$id]:-}" = "running" ] && echo "running" || echo "not-running"
+  }
+
+  case "${selection_choice:-1}" in
+    1)
+      TARGET_CONTAINERS=("${ALL_RUNNING[@]}")
+      ;;
+
+    2)
+      if [ -z "${HQ_START:-}" ]; then
+        read_with_default "Data Center starting CTID" "200" "HQ_START"
+      else
+        echo "  Using Data Center start: ${HQ_START}"
+      fi
+      HQ_END=$((HQ_START + 5))
+      echo "Checking Data Center containers (${HQ_START}-${HQ_END})..."
+      for ctid in $(seq $HQ_START $HQ_END); do
+        status=$(_cluster_ct_running $ctid)
+        if [ "$status" = "running" ]; then
+          TARGET_CONTAINERS+=($ctid)
+          echo "  CT ${ctid}: Will stop"
+        else
+          echo -e "  ${YELLOW}CT ${ctid}: Not running (skipped)${NC}"
+        fi
+      done
+      ;;
+
+    3)
+      if [ -z "${BRANCH_START:-}" ]; then
+        read_with_default "Branch starting CTID" "220" "BRANCH_START"
+      else
+        echo "  Using Branch start: ${BRANCH_START}"
+      fi
+      BRANCH_END=$((BRANCH_START + 4))
+      echo "Checking Branch containers (${BRANCH_START}-${BRANCH_END})..."
+      for ctid in $(seq $BRANCH_START $BRANCH_END); do
+        status=$(_cluster_ct_running $ctid)
+        if [ "$status" = "running" ]; then
+          TARGET_CONTAINERS+=($ctid)
+          echo "  CT ${ctid}: Will stop"
+        else
+          echo -e "  ${YELLOW}CT ${ctid}: Not running (skipped)${NC}"
+        fi
+      done
+      ;;
+
+    4)
+      echo "Enter container IDs to stop (space or comma-separated)"
+      echo "Example: 200 201 220 or 200,201,220"
+      read -p "CTIDs: " ctid_input
+      ctid_input=$(echo "$ctid_input" | tr ',' ' ')
+      for ctid in $ctid_input; do
+        ctid=$(echo $ctid | xargs)
+        status=$(_cluster_ct_running $ctid)
+        if [ "$status" = "running" ]; then
+          TARGET_CONTAINERS+=($ctid)
+        else
+          echo -e "${YELLOW}CT ${ctid}: Not running (skipped)${NC}"
+        fi
+      done
+      ;;
+
+    5)
+      read -p "Enter range (e.g., 200-205): " range_input
+      if [[ "$range_input" =~ ^([0-9]+)-([0-9]+)$ ]]; then
+        START="${BASH_REMATCH[1]}"
+        END="${BASH_REMATCH[2]}"
+        echo "Checking containers ${START}-${END}..."
+        for ctid in $(seq $START $END); do
+          status=$(_cluster_ct_running $ctid)
+          if [ "$status" = "running" ]; then
+            TARGET_CONTAINERS+=($ctid)
+            echo "  CT ${ctid}: Will stop"
+          else
+            echo -e "  ${YELLOW}CT ${ctid}: Not running (skipped)${NC}"
+          fi
+        done
+      else
+        echo -e "${RED}Invalid range format${NC}"
+        return 1
+      fi
+      ;;
+
+    *)
+      echo -e "${RED}Invalid selection${NC}"
+      return 1
+      ;;
+  esac
+
+  if [ ${#TARGET_CONTAINERS[@]} -eq 0 ]; then
+    echo ""
+    echo -e "${YELLOW}No containers selected or none are running${NC}"
+    return 0
+  fi
+
+  echo ""
+  echo "${#TARGET_CONTAINERS[@]} container(s) will be stopped."
   echo ""
   read -p "Proceed? [y/N]: " confirm
 
@@ -863,10 +1433,11 @@ cmd_stop_containers() {
   echo -e "${GREEN}Stopping containers...${NC}"
   echo ""
   declare -a PIDS=()
-  for CTID in "${RUNNING[@]}"; do
-    HOSTNAME=$(get_hostname $CTID)
-    echo "Stopping CT ${CTID} (${HOSTNAME})..."
-    pct stop $CTID 2>/dev/null &
+  for CTID in "${TARGET_CONTAINERS[@]}"; do
+    HOSTNAME="${_CT_HOSTNAME[$CTID]:-unknown}"
+    CT_NODE="${_CT_NODE[$CTID]:-$(get_local_node)}"
+    echo "Stopping CT ${CTID} (${HOSTNAME}) on ${CT_NODE}..."
+    run_on_node "$CT_NODE" pct stop $CTID 2>/dev/null &
     PIDS+=($!)
   done
 
@@ -877,10 +1448,10 @@ cmd_stop_containers() {
   section_header "Stop Complete"
   SUCCESS=0
   FAILED=0
-  for CTID in "${RUNNING[@]}"; do
-    HOSTNAME=$(get_hostname $CTID)
-    STATUS=$(get_status $CTID)
-    if [ "$STATUS" = "stopped" ]; then
+  for CTID in "${TARGET_CONTAINERS[@]}"; do
+    HOSTNAME="${_CT_HOSTNAME[$CTID]:-unknown}"
+    CT_NODE="${_CT_NODE[$CTID]:-$(get_local_node)}"
+    if ! run_on_node "$CT_NODE" pct status "$CTID" 2>/dev/null | grep -q "running"; then
       echo -e "${GREEN}✓ CT ${CTID} (${HOSTNAME}) stopped${NC}"
       ((++SUCCESS))
     else
@@ -931,7 +1502,7 @@ _default_security_tests_for_profile() {
   local profile="$1"
   case "$profile" in
     fileserver)    echo "dlp-network" ;;
-    devops)        echo "eicar dlp-genai-prompt dlp-genai-file" ;;
+    devops)        echo "eicar dlp-genai-prompt dlp-genai-file dlp-genai-image" ;;
     developer)     echo "eicar dlp-genai-prompt dlp-genai-file" ;;
     office-worker) echo "policy-violation dlp-genai-prompt" ;;
     sales)         echo "policy-violation dlp-genai-prompt dlp-genai-file" ;;
@@ -944,11 +1515,11 @@ _install_security_test() {
   local ctid=$1
   local test_name=$2
 
-  pct exec $ctid -- mkdir -p /opt/traffic-gen/security-tests
+  run_on_node "$CT_NODE" pct exec $ctid -- mkdir -p /opt/traffic-gen/security-tests
 
   case "$test_name" in
     eicar)
-      pct exec $ctid -- bash -c 'cat > /opt/traffic-gen/security-tests/eicar.sh' <<'EOF'
+      run_on_node "$CT_NODE" pct exec $ctid -- bash -c 'cat > /opt/traffic-gen/security-tests/eicar.sh' <<'EOF'
 #!/bin/bash
 echo "[$(date)] Security test: EICAR download"
 curl -s -m 15 https://malware.wicar.org/data/eicar.com > /dev/null 2>&1 || true
@@ -959,7 +1530,7 @@ EOF
       ;;
 
     dlp-network)
-      pct exec $ctid -- bash -c 'cat > /opt/traffic-gen/security-tests/dlp-network.sh' <<'EOF'
+      run_on_node "$CT_NODE" pct exec $ctid -- bash -c 'cat > /opt/traffic-gen/security-tests/dlp-network.sh' <<'EOF'
 #!/bin/bash
 FAKE_SSN="$((RANDOM % 900 + 100))-$((RANDOM % 90 + 10))-$((RANDOM % 9000 + 1000))"
 FAKE_CCN="4111$((RANDOM % 9000 + 1000))$((RANDOM % 9000 + 1000))$((RANDOM % 9000 + 1000))"
@@ -972,7 +1543,7 @@ EOF
       ;;
 
     dlp-genai-prompt)
-      pct exec $ctid -- bash -c 'cat > /opt/traffic-gen/security-tests/dlp-genai-prompt.sh' <<'EOF'
+      run_on_node "$CT_NODE" pct exec $ctid -- bash -c 'cat > /opt/traffic-gen/security-tests/dlp-genai-prompt.sh' <<'EOF'
 #!/bin/bash
 FAKE_SSN="$((RANDOM % 900 + 100))-$((RANDOM % 90 + 10))-$((RANDOM % 9000 + 1000))"
 FAKE_CCN="4111$((RANDOM % 9000 + 1000))$((RANDOM % 9000 + 1000))$((RANDOM % 9000 + 1000))"
@@ -1001,7 +1572,7 @@ EOF
       ;;
 
     dlp-genai-file)
-      pct exec $ctid -- bash -c 'cat > /opt/traffic-gen/security-tests/dlp-genai-file.sh' <<'EOF'
+      run_on_node "$CT_NODE" pct exec $ctid -- bash -c 'cat > /opt/traffic-gen/security-tests/dlp-genai-file.sh' <<'EOF'
 #!/bin/bash
 FAKE_SSN="$((RANDOM % 900 + 100))-$((RANDOM % 90 + 10))-$((RANDOM % 9000 + 1000))"
 FAKE_CCN="4111$((RANDOM % 9000 + 1000))$((RANDOM % 9000 + 1000))$((RANDOM % 9000 + 1000))"
@@ -1030,8 +1601,8 @@ EOF
       ;;
 
     dlp-genai-image)
-      pct exec $ctid -- apk add --quiet imagemagick 2>/dev/null || true
-      pct exec $ctid -- bash -c 'cat > /opt/traffic-gen/security-tests/dlp-genai-image.sh' <<'EOF'
+      run_on_node "$CT_NODE" pct exec $ctid -- apk add --quiet imagemagick 2>/dev/null || true
+      run_on_node "$CT_NODE" pct exec $ctid -- bash -c 'cat > /opt/traffic-gen/security-tests/dlp-genai-image.sh' <<'EOF'
 #!/bin/bash
 # Requires imagemagick (installed by proxmox-lab.sh)
 FAKE_SSN="$((RANDOM % 900 + 100))-$((RANDOM % 90 + 10))-$((RANDOM % 9000 + 1000))"
@@ -1066,7 +1637,7 @@ EOF
       ;;
 
     policy-violation)
-      pct exec $ctid -- bash -c 'cat > /opt/traffic-gen/security-tests/policy-violation.sh' <<'EOF'
+      run_on_node "$CT_NODE" pct exec $ctid -- bash -c 'cat > /opt/traffic-gen/security-tests/policy-violation.sh' <<'EOF'
 #!/bin/bash
 TARGETS=(
   "https://www.dropbox.com"
@@ -1088,7 +1659,7 @@ EOF
       ;;
 
     ueba)
-      pct exec $ctid -- bash -c 'cat > /opt/traffic-gen/security-tests/ueba.sh' <<'EOF'
+      run_on_node "$CT_NODE" pct exec $ctid -- bash -c 'cat > /opt/traffic-gen/security-tests/ueba.sh' <<'EOF'
 #!/bin/bash
 source /opt/traffic-gen/utils/business-hours.sh 2>/dev/null || true
 source /opt/traffic-gen/utils/random-timing.sh 2>/dev/null || true
@@ -1116,13 +1687,13 @@ EOF
       ;;
   esac
 
-  pct exec $ctid -- chmod +x /opt/traffic-gen/security-tests/${test_name}.sh
+  run_on_node "$CT_NODE" pct exec $ctid -- chmod +x /opt/traffic-gen/security-tests/${test_name}.sh
 }
 
 _add_security_test_cron() {
   local ctid=$1
   local cron_schedule=$2
-  pct exec $ctid -- bash -c "
+  run_on_node "$CT_NODE" pct exec $ctid -- bash -c "
     existing=\$(crontab -l 2>/dev/null | grep -v 'run-security-tests' || true)
     printf '%s\n%s\n' \"\$existing\" '${cron_schedule} /opt/traffic-gen/run-security-tests.sh' | crontab -
   "
@@ -1131,9 +1702,9 @@ _add_security_test_cron() {
 _install_framework() {
   local ctid=$1
 
-  pct exec $ctid -- mkdir -p /opt/traffic-gen/security-tests
+  run_on_node "$CT_NODE" pct exec $ctid -- mkdir -p /opt/traffic-gen/security-tests
 
-  pct exec $ctid -- bash -c 'cat > /opt/traffic-gen/run-security-tests.sh' <<'EOF'
+  run_on_node "$CT_NODE" pct exec $ctid -- bash -c 'cat > /opt/traffic-gen/run-security-tests.sh' <<'EOF'
 #!/bin/bash
 # Security test dispatcher — runs all enabled security tests
 TESTS_DIR="/opt/traffic-gen/security-tests"
@@ -1143,9 +1714,9 @@ for test_script in "$TESTS_DIR"/*.sh; do
 done
 EOF
 
-  pct exec $ctid -- chmod +x /opt/traffic-gen/run-security-tests.sh
+  run_on_node "$CT_NODE" pct exec $ctid -- chmod +x /opt/traffic-gen/run-security-tests.sh
 
-  pct exec $ctid -- bash -c 'cat > /opt/traffic-gen/utils/genai.sh' <<'EOF'
+  run_on_node "$CT_NODE" pct exec $ctid -- bash -c 'cat > /opt/traffic-gen/utils/genai.sh' <<'EOF'
 #!/bin/bash
 # GenAI traffic utilities — realistic enterprise AI usage simulation
 
@@ -1197,7 +1768,7 @@ genai_api_call() {
 }
 EOF
 
-  pct exec $ctid -- bash -c 'cat > /opt/traffic-gen/traffic-gen.sh' <<'EOF'
+  run_on_node "$CT_NODE" pct exec $ctid -- bash -c 'cat > /opt/traffic-gen/traffic-gen.sh' <<'EOF'
 #!/bin/bash
 # Main traffic generator script
 
@@ -1217,9 +1788,9 @@ else
 fi
 EOF
 
-  pct exec $ctid -- chmod +x /opt/traffic-gen/traffic-gen.sh
+  run_on_node "$CT_NODE" pct exec $ctid -- chmod +x /opt/traffic-gen/traffic-gen.sh
 
-  pct exec $ctid -- bash -c 'cat > /opt/traffic-gen/utils/business-hours.sh' <<'EOF'
+  run_on_node "$CT_NODE" pct exec $ctid -- bash -c 'cat > /opt/traffic-gen/utils/business-hours.sh' <<'EOF'
 #!/bin/bash
 # Check if current time is business hours
 
@@ -1245,7 +1816,7 @@ is_lunch_time() {
 }
 EOF
 
-  pct exec $ctid -- bash -c 'cat > /opt/traffic-gen/utils/random-timing.sh' <<'EOF'
+  run_on_node "$CT_NODE" pct exec $ctid -- bash -c 'cat > /opt/traffic-gen/utils/random-timing.sh' <<'EOF'
 #!/bin/bash
 # Random timing utilities
 
@@ -1296,7 +1867,7 @@ _install_profile() {
 
   case "$profile" in
     fileserver)
-      pct exec $ctid -- bash -c 'cat > /opt/traffic-gen/profiles/fileserver.sh' <<'EOF'
+      run_on_node "$CT_NODE" pct exec $ctid -- bash -c 'cat > /opt/traffic-gen/profiles/fileserver.sh' <<'EOF'
 #!/bin/bash
 source /opt/traffic-gen/utils/random-timing.sh
 
@@ -1332,7 +1903,7 @@ EOF
       ;;
 
     webapp)
-      pct exec $ctid -- bash -c 'cat > /opt/traffic-gen/profiles/webapp.sh' <<'EOF'
+      run_on_node "$CT_NODE" pct exec $ctid -- bash -c 'cat > /opt/traffic-gen/profiles/webapp.sh' <<'EOF'
 #!/bin/bash
 source /opt/traffic-gen/utils/random-timing.sh
 
@@ -1358,7 +1929,7 @@ EOF
       ;;
 
     email)
-      pct exec $ctid -- bash -c 'cat > /opt/traffic-gen/profiles/email.sh' <<'EOF'
+      run_on_node "$CT_NODE" pct exec $ctid -- bash -c 'cat > /opt/traffic-gen/profiles/email.sh' <<'EOF'
 #!/bin/bash
 source /opt/traffic-gen/utils/random-timing.sh
 
@@ -1380,7 +1951,7 @@ EOF
       ;;
 
     monitoring)
-      pct exec $ctid -- bash -c 'cat > /opt/traffic-gen/profiles/monitoring.sh' <<'EOF'
+      run_on_node "$CT_NODE" pct exec $ctid -- bash -c 'cat > /opt/traffic-gen/profiles/monitoring.sh' <<'EOF'
 #!/bin/bash
 source /opt/traffic-gen/utils/random-timing.sh
 
@@ -1403,7 +1974,7 @@ EOF
       ;;
 
     devops)
-      pct exec $ctid -- bash -c 'cat > /opt/traffic-gen/profiles/devops.sh' <<'EOF'
+      run_on_node "$CT_NODE" pct exec $ctid -- bash -c 'cat > /opt/traffic-gen/profiles/devops.sh' <<'EOF'
 #!/bin/bash
 source /opt/traffic-gen/utils/random-timing.sh
 source /opt/traffic-gen/utils/genai.sh 2>/dev/null || true
@@ -1436,7 +2007,7 @@ EOF
       ;;
 
     database)
-      pct exec $ctid -- bash -c 'cat > /opt/traffic-gen/profiles/database.sh' <<'EOF'
+      run_on_node "$CT_NODE" pct exec $ctid -- bash -c 'cat > /opt/traffic-gen/profiles/database.sh' <<'EOF'
 #!/bin/bash
 source /opt/traffic-gen/utils/random-timing.sh
 
@@ -1455,7 +2026,7 @@ EOF
       ;;
 
     office-worker)
-      pct exec $ctid -- bash -c 'cat > /opt/traffic-gen/domains/office-worker.txt' <<'EOF'
+      run_on_node "$CT_NODE" pct exec $ctid -- bash -c 'cat > /opt/traffic-gen/domains/office-worker.txt' <<'EOF'
 https://outlook.office365.com
 https://teams.microsoft.com
 https://sharepoint.com
@@ -1478,7 +2049,7 @@ https://www.bankofamerica.com
 https://www.chase.com
 EOF
 
-      pct exec $ctid -- bash -c 'cat > /opt/traffic-gen/profiles/office-worker.sh' <<'EOF'
+      run_on_node "$CT_NODE" pct exec $ctid -- bash -c 'cat > /opt/traffic-gen/profiles/office-worker.sh' <<'EOF'
 #!/bin/bash
 source /opt/traffic-gen/utils/business-hours.sh
 source /opt/traffic-gen/utils/random-timing.sh
@@ -1533,7 +2104,7 @@ EOF
       ;;
 
     sales)
-      pct exec $ctid -- bash -c 'cat > /opt/traffic-gen/profiles/sales.sh' <<'EOF'
+      run_on_node "$CT_NODE" pct exec $ctid -- bash -c 'cat > /opt/traffic-gen/profiles/sales.sh' <<'EOF'
 #!/bin/bash
 source /opt/traffic-gen/utils/business-hours.sh
 source /opt/traffic-gen/utils/random-timing.sh
@@ -1571,7 +2142,7 @@ EOF
       ;;
 
     developer)
-      pct exec $ctid -- bash -c 'cat > /opt/traffic-gen/profiles/developer.sh' <<'EOF'
+      run_on_node "$CT_NODE" pct exec $ctid -- bash -c 'cat > /opt/traffic-gen/profiles/developer.sh' <<'EOF'
 #!/bin/bash
 source /opt/traffic-gen/utils/business-hours.sh
 source /opt/traffic-gen/utils/random-timing.sh
@@ -1624,7 +2195,7 @@ EOF
       ;;
 
     executive)
-      pct exec $ctid -- bash -c 'cat > /opt/traffic-gen/domains/executive.txt' <<'EOF'
+      run_on_node "$CT_NODE" pct exec $ctid -- bash -c 'cat > /opt/traffic-gen/domains/executive.txt' <<'EOF'
 https://www.wsj.com
 https://www.bloomberg.com
 https://www.ft.com
@@ -1647,7 +2218,7 @@ https://www.apple.com
 https://www.salesforce.com
 EOF
 
-      pct exec $ctid -- bash -c 'cat > /opt/traffic-gen/profiles/executive.sh' <<'EOF'
+      run_on_node "$CT_NODE" pct exec $ctid -- bash -c 'cat > /opt/traffic-gen/profiles/executive.sh' <<'EOF'
 #!/bin/bash
 source /opt/traffic-gen/utils/business-hours.sh
 source /opt/traffic-gen/utils/random-timing.sh
@@ -1689,17 +2260,22 @@ EOF
       ;;
   esac
 
-  pct exec $ctid -- chmod +x /opt/traffic-gen/profiles/${profile}.sh
+  run_on_node "$CT_NODE" pct exec $ctid -- chmod +x /opt/traffic-gen/profiles/${profile}.sh
 }
 
 cmd_install_traffic_gen() {
+  _load_config
   section_header "Traffic Generator Installation"
 
   # 1. Container Selection
   echo -e "${BLUE}1. Container Selection${NC}"
-  echo "Detecting running containers..."
+  echo "Detecting running containers (cluster-wide)..."
 
-  RUNNING_CONTAINERS=$(pct list 2>/dev/null | awk 'NR>1 && $2=="running" {print $1}' | sort -n)
+  _load_ct_data
+
+  RUNNING_CONTAINERS=$(for ctid in "${!_CT_NODE[@]}"; do
+    [ "${_CT_STATUS[$ctid]:-}" = "running" ] && echo "$ctid"
+  done | sort -n)
 
   if [ -z "$RUNNING_CONTAINERS" ]; then
     echo -e "${RED}No running containers found!${NC}"
@@ -1708,13 +2284,16 @@ cmd_install_traffic_gen() {
   fi
 
   echo "Running containers:"
-  pct list | head -10
+  for ctid in $RUNNING_CONTAINERS; do
+    printf "  %-6s %-20s %-10s %-8s\n" \
+      "$ctid" "${_CT_HOSTNAME[$ctid]:-?}" "${_CT_NODE[$ctid]:-?}" "running"
+  done
 
   echo ""
   echo "Installation scope options:"
   echo "  1) Auto-detect and configure all containers with default profiles"
-  echo "  2) Data Center containers only (specify range)"
-  echo "  3) Branch containers only (specify range)"
+  echo "  2) Data Center containers only"
+  echo "  3) Branch containers only"
   echo "  4) Custom selection (specify CTIDs)"
   read -p "Select scope [1-4] (default: 1): " scope_choice
 
@@ -1737,7 +2316,11 @@ cmd_install_traffic_gen() {
       ;;
 
     2)
-      read_with_default "Data Center starting CTID" "${HQ_START:-200}" "HQ_START"
+      if [ -z "${HQ_START:-}" ]; then
+        read_with_default "Data Center starting CTID" "200" "HQ_START"
+      else
+        echo "  Using Data Center start: ${HQ_START}"
+      fi
       HQ_END=$((HQ_START + 5))
 
       echo "Data Center containers (${HQ_START}-${HQ_END}):"
@@ -1755,7 +2338,11 @@ cmd_install_traffic_gen() {
       ;;
 
     3)
-      read_with_default "Branch starting CTID" "${BRANCH_START:-220}" "BRANCH_START"
+      if [ -z "${BRANCH_START:-}" ]; then
+        read_with_default "Branch starting CTID" "220" "BRANCH_START"
+      else
+        echo "  Using Branch start: ${BRANCH_START}"
+      fi
       BRANCH_END=$((BRANCH_START + 4))
 
       echo "Branch containers (${BRANCH_START}-${BRANCH_END}):"
@@ -1800,6 +2387,14 @@ cmd_install_traffic_gen() {
     echo -e "${RED}No valid containers selected${NC}"
     return 1
   fi
+
+  # Look up which node each target container lives on.
+  # _CT_NODE is already populated by _load_ct_data() above — no extra query needed.
+  declare -A CT_NODES=()
+  LOCAL_NODE=$(get_local_node)
+  for CTID in "${!TARGET_PROFILES[@]}"; do
+    CT_NODES[$CTID]="${_CT_NODE[$CTID]:-$LOCAL_NODE}"
+  done
 
   # 2. Traffic Intensity
   echo ""
@@ -1988,11 +2583,12 @@ cmd_install_traffic_gen() {
 
   for CTID in "${!TARGET_PROFILES[@]}"; do
     PROFILE="${TARGET_PROFILES[$CTID]}"
+    CT_NODE="${CT_NODES[$CTID]:-$LOCAL_NODE}"
 
     echo ""
-    echo -e "${CYAN}Configuring CT ${CTID} (${PROFILE})...${NC}"
+    echo -e "${CYAN}Configuring CT ${CTID} (${PROFILE}) on ${CT_NODE}...${NC}"
 
-    if ! pct status $CTID | grep -q "running"; then
+    if ! run_on_node "$CT_NODE" pct status "$CTID" 2>/dev/null | grep -q "running"; then
       echo -e "${YELLOW}  ⚠ Container not running, skipping${NC}"
       continue
     fi
@@ -2010,9 +2606,9 @@ cmd_install_traffic_gen() {
     if $ENABLE_CRON; then
       echo "  → Configuring cron schedule..."
       if [[ "$PROFILE" =~ ^(office-worker|sales|developer|executive)$ ]]; then
-        pct exec $CTID -- bash -c "echo '${CRON_OFFICE} /opt/traffic-gen/traffic-gen.sh ${PROFILE}' | crontab -"
+        run_on_node "$CT_NODE" pct exec $CTID -- bash -c "echo '${CRON_OFFICE} /opt/traffic-gen/traffic-gen.sh ${PROFILE}' | crontab -"
       else
-        pct exec $CTID -- bash -c "echo '${CRON_SERVER} /opt/traffic-gen/traffic-gen.sh ${PROFILE}' | crontab -"
+        run_on_node "$CT_NODE" pct exec $CTID -- bash -c "echo '${CRON_SERVER} /opt/traffic-gen/traffic-gen.sh ${PROFILE}' | crontab -"
       fi
     fi
 
@@ -2067,40 +2663,60 @@ cmd_install_traffic_gen() {
 # ============================================================
 
 cmd_show_status() {
+  _load_config
   section_header "Lab Status"
 
-  ALL_CONTAINERS=$(pct list 2>/dev/null | awk 'NR>1 {print $1}' | sort -n)
+  _load_ct_data
 
-  if [ -z "$ALL_CONTAINERS" ]; then
-    echo -e "${RED}No containers found on this system${NC}"
+  if [ ${#_CT_NODE[@]} -eq 0 ]; then
+    echo -e "${RED}No containers found${NC}"
     return 0
   fi
 
-  printf "%-8s %-24s %-12s %-14s\n" "CTID" "Hostname" "Status" "Traffic Gen"
-  echo "------------------------------------------------------------"
+  # Build sorted list: node<TAB>ctid (so we can group by node)
+  local sorted_pairs
+  sorted_pairs=$(for ctid in "${!_CT_NODE[@]}"; do
+    echo "${_CT_NODE[$ctid]}"$'\t'"$ctid"
+  done | sort -k1,1 -k2,2n)
 
   RUNNING=0
   STOPPED=0
+  local current_node=""
 
-  for CTID in $ALL_CONTAINERS; do
-    STATUS=$(get_status $CTID)
-    HOSTNAME=$(get_hostname $CTID)
+  while IFS=$'\t' read -r node ctid; do
+    local name="${_CT_HOSTNAME[$ctid]:-}"
+    local status="${_CT_STATUS[$ctid]:-stopped}"
+    local tags="${_CT_TAGS[$ctid]:-}"
 
-    if [ "$STATUS" = "running" ]; then
-      if pct exec $CTID -- crontab -l 2>/dev/null | grep -q "traffic-gen"; then
+    # Filter to lab-managed containers only
+    if [[ "$tags" != *"lab-managed"* ]] && \
+       [[ "$name" != hq-* ]] && [[ "$name" != branch-* ]]; then
+      continue
+    fi
+
+    if [ "$node" != "$current_node" ]; then
+      [ -n "$current_node" ] && echo ""
+      echo -e "${BLUE}=== Node: ${node} ===${NC}"
+      printf "  %-8s %-24s %-12s %-14s\n" "CTID" "Hostname" "Status" "Traffic Gen"
+      echo "  --------------------------------------------------------"
+      current_node="$node"
+    fi
+
+    if [ "$status" = "running" ]; then
+      if run_on_node "$node" pct exec "$ctid" -- crontab -l 2>/dev/null | grep -q "traffic-gen"; then
         TRAFFIC="${GREEN}enabled${NC}"
       else
         TRAFFIC="${YELLOW}not set${NC}"
       fi
-      printf "%-8s %-24s ${GREEN}%-12s${NC} " "$CTID" "$HOSTNAME" "Running"
+      printf "  %-8s %-24s ${GREEN}%-12s${NC} " "$ctid" "$name" "Running"
       RUNNING=$((RUNNING + 1))
     else
       TRAFFIC="-"
-      printf "%-8s %-24s ${YELLOW}%-12s${NC} " "$CTID" "$HOSTNAME" "Stopped"
+      printf "  %-8s %-24s ${YELLOW}%-12s${NC} " "$ctid" "$name" "Stopped"
       STOPPED=$((STOPPED + 1))
     fi
     echo -e "$TRAFFIC"
-  done
+  done <<< "$sorted_pairs"
 
   echo ""
   echo -e "Total: ${GREEN}${RUNNING} running${NC}, ${YELLOW}${STOPPED} stopped${NC}"
@@ -2233,51 +2849,71 @@ cmd_update() {
 }
 
 cmd_system_cleanup() {
+  _load_config
   section_header "System Cleanup"
 
-  # Containers tagged lab-managed (deployed containers)
+  # Discover lab-managed containers cluster-wide
+  echo "Scanning for containers (cluster-wide)..."
+  _load_ct_data
+
   LAB_CTIDS=()
-  for ctid in $(pct list 2>/dev/null | awk 'NR>1 {print $1}' | sort -n); do
-    if pct config $ctid 2>/dev/null | grep -q "tags:.*lab-managed"; then
+  declare -A LAB_CT_NODE=() LAB_CT_STATUS=() LAB_CT_HOSTNAME=()
+  for ctid in $(echo "${!_CT_NODE[@]}" | tr ' ' '\n' | sort -n); do
+    name="${_CT_HOSTNAME[$ctid]:-}"
+    tags="${_CT_TAGS[$ctid]:-}"
+    if [[ "$tags" == *"lab-managed"* ]] || \
+       [[ "$name" == hq-* ]] || [[ "$name" == branch-* ]]; then
       LAB_CTIDS+=($ctid)
+      LAB_CT_NODE[$ctid]="${_CT_NODE[$ctid]}"
+      LAB_CT_STATUS[$ctid]="${_CT_STATUS[$ctid]}"
+      LAB_CT_HOSTNAME[$ctid]="$name"
     fi
   done
 
-  # Template identified by saved TEMPLATE_ID
+  # Template identified by saved TEMPLATE_ID — search cluster-wide
   TEMPLATE_CTID=""
-  if [ -n "${TEMPLATE_ID:-}" ] && pct status "$TEMPLATE_ID" &>/dev/null; then
-    TEMPLATE_CTID="$TEMPLATE_ID"
+  TEMPLATE_NODE=""
+  if [ -n "${TEMPLATE_ID:-}" ]; then
+    TEMPLATE_NODE=$(_find_template_node "$TEMPLATE_ID")
+    [ -n "$TEMPLATE_NODE" ] && TEMPLATE_CTID="$TEMPLATE_ID"
   fi
 
-  ALPINE_IMAGES=()
-  for f in /var/lib/vz/template/cache/alpine-*.tar.xz; do
-    [ -f "$f" ] && ALPINE_IMAGES+=("$f")
+  # Alpine images — check every cluster node
+  declare -a ALPINE_IMAGE_NODES=() ALPINE_IMAGE_PATHS=()
+  local _nodes _node
+  _nodes=$(get_cluster_nodes 2>/dev/null)
+  [ -z "$_nodes" ] && _nodes=$(get_local_node)
+  for _node in $_nodes; do
+    while IFS= read -r _f; do
+      [ -n "$_f" ] && { ALPINE_IMAGE_NODES+=("$_node"); ALPINE_IMAGE_PATHS+=("$_f"); }
+    done < <(run_on_node "$_node" sh -c \
+      'ls /var/lib/vz/template/cache/alpine-*.tar.xz 2>/dev/null' 2>/dev/null)
   done
 
-  if [ ${#LAB_CTIDS[@]} -eq 0 ] && [ -z "$TEMPLATE_CTID" ] && [ ${#ALPINE_IMAGES[@]} -eq 0 ]; then
+  if [ ${#LAB_CTIDS[@]} -eq 0 ] && [ -z "$TEMPLATE_CTID" ] && [ ${#ALPINE_IMAGE_PATHS[@]} -eq 0 ]; then
     echo "Nothing to clean up."
     return 0
   fi
 
+  echo ""
   echo "The following will be PERMANENTLY DESTROYED:"
   echo ""
   if [ -n "$TEMPLATE_CTID" ]; then
     echo "Template:"
-    echo "  CT ${TEMPLATE_CTID} ($(get_hostname $TEMPLATE_CTID)) — template"
+    echo "  CT ${TEMPLATE_CTID} — template (on ${TEMPLATE_NODE})"
   fi
   if [ ${#LAB_CTIDS[@]} -gt 0 ]; then
     echo "Containers:"
     for ctid in "${LAB_CTIDS[@]}"; do
-      HOSTNAME=$(get_hostname $ctid)
-      STATUS=$(get_status $ctid)
-      echo "  CT ${ctid} (${HOSTNAME}) — ${STATUS}"
+      echo "  CT ${ctid} (${LAB_CT_HOSTNAME[$ctid]:-unknown})" \
+           "— ${LAB_CT_STATUS[$ctid]:-?} (on ${LAB_CT_NODE[$ctid]:-?})"
     done
   fi
-  if [ ${#ALPINE_IMAGES[@]} -gt 0 ]; then
+  if [ ${#ALPINE_IMAGE_PATHS[@]} -gt 0 ]; then
     echo ""
     echo "Alpine template images:"
-    for f in "${ALPINE_IMAGES[@]}"; do
-      echo "  $(basename $f)"
+    for i in "${!ALPINE_IMAGE_PATHS[@]}"; do
+      echo "  $(basename ${ALPINE_IMAGE_PATHS[$i]}) (on ${ALPINE_IMAGE_NODES[$i]})"
     done
   fi
 
@@ -2294,41 +2930,69 @@ cmd_system_cleanup() {
   echo ""
   echo "Cleaning up..."
 
-  # Destroy deployed containers first (stop if running)
+  # Destroy deployed containers first (stop if running), cluster-wide
   for ctid in "${LAB_CTIDS[@]}"; do
-    HOSTNAME=$(get_hostname $ctid)
-    STATUS=$(get_status $ctid)
+    CT_NODE="${LAB_CT_NODE[$ctid]:-$(get_local_node)}"
+    HOSTNAME="${LAB_CT_HOSTNAME[$ctid]:-unknown}"
+    STATUS="${LAB_CT_STATUS[$ctid]:-}"
     if [ "$STATUS" = "running" ]; then
-      echo "Stopping CT ${ctid}..."
-      pct stop $ctid 2>/dev/null || true
+      echo "Stopping CT ${ctid} (${HOSTNAME}) on ${CT_NODE}..."
+      run_on_node "$CT_NODE" pct stop $ctid 2>/dev/null || true
       sleep 2
     fi
-    echo "Destroying CT ${ctid} (${HOSTNAME})..."
-    if pct destroy $ctid 2>/dev/null; then
+    echo "Destroying CT ${ctid} (${HOSTNAME}) on ${CT_NODE}..."
+    if run_on_node "$CT_NODE" pct destroy $ctid 2>/dev/null; then
       echo -e "${GREEN}✓ CT ${ctid} destroyed${NC}"
     else
       echo -e "${RED}✗ CT ${ctid} failed to destroy${NC}"
     fi
   done
 
-  # Destroy template
-  if [ -n "$TEMPLATE_CTID" ]; then
-    echo "Destroying template CT ${TEMPLATE_CTID}..."
-    if pct destroy $TEMPLATE_CTID 2>/dev/null; then
-      echo -e "${GREEN}✓ CT ${TEMPLATE_CTID} destroyed${NC}"
-    else
-      echo -e "${RED}✗ CT ${TEMPLATE_CTID} failed to destroy${NC}"
+  # Confirm all containers are fully gone before destroying the template.
+  # pct destroy is asynchronous — the dataset removal can still be in flight
+  # when the command returns, and Proxmox may refuse to destroy the template
+  # while any volume operations from the clones are still pending.
+  if [ ${#LAB_CTIDS[@]} -gt 0 ] && [ -n "$TEMPLATE_CTID" ]; then
+    echo "Waiting for containers to be fully removed..."
+    local max_wait=30 waited=0 all_gone
+    while [ $waited -lt $max_wait ]; do
+      all_gone=true
+      for ctid in "${LAB_CTIDS[@]}"; do
+        CT_NODE="${LAB_CT_NODE[$ctid]:-$(get_local_node)}"
+        if run_on_node "$CT_NODE" pct status "$ctid" &>/dev/null; then
+          all_gone=false
+          break
+        fi
+      done
+      $all_gone && break
+      sleep 2
+      waited=$((waited + 2))
+    done
+    if ! $all_gone; then
+      echo -e "${YELLOW}Warning: some containers may not be fully gone — template destroy may fail${NC}"
     fi
   fi
 
-  if [ ${#ALPINE_IMAGES[@]} -gt 0 ]; then
+  # Destroy template
+  if [ -n "$TEMPLATE_CTID" ]; then
+    echo "Destroying template CT ${TEMPLATE_CTID} on ${TEMPLATE_NODE}..."
+    if run_on_node "$TEMPLATE_NODE" pct destroy $TEMPLATE_CTID 2>/dev/null; then
+      echo -e "${GREEN}✓ Template CT ${TEMPLATE_CTID} destroyed${NC}"
+    else
+      echo -e "${RED}✗ Template CT ${TEMPLATE_CTID} failed to destroy${NC}"
+    fi
+  fi
+
+  if [ ${#ALPINE_IMAGE_PATHS[@]} -gt 0 ]; then
     echo ""
     echo "Removing Alpine template images..."
-    for f in "${ALPINE_IMAGES[@]}"; do
-      if rm -f "$f"; then
-        echo -e "${GREEN}✓ Removed $(basename $f)${NC}"
+    for i in "${!ALPINE_IMAGE_PATHS[@]}"; do
+      _node="${ALPINE_IMAGE_NODES[$i]}"
+      _path="${ALPINE_IMAGE_PATHS[$i]}"
+      if run_on_node "$_node" rm -f "$_path"; then
+        echo -e "${GREEN}✓ Removed $(basename $_path) from ${_node}${NC}"
       else
-        echo -e "${RED}✗ Failed to remove $(basename $f)${NC}"
+        echo -e "${RED}✗ Failed to remove $(basename $_path) from ${_node}${NC}"
       fi
     done
   fi

@@ -20,7 +20,7 @@ Provides a complete workflow for building a multi-container lab environment that
 ### What It Does
 
 - **Creates Alpine LXC templates** with pre-configured utilities
-- **Deploys Data Center and Branch network containers** with appropriate configurations
+- **Deploys Data Center and Branch network containers** with appropriate configurations, distributed across multiple Proxmox cluster nodes with auto-balanced or manual placement
 - **Generates realistic traffic patterns** for different user/server profiles, including GenAI platform usage
 - **Configures security tests** independently of normal traffic — DLP (network, GenAI prompt/file/image OCR), AV/malware, policy violations, UEBA anomalies
 
@@ -70,8 +70,9 @@ On first run, the script prompts for all values as usual. After completing any c
 - Proxmox VE 8.x or higher
 - Root or sudo access
 - Network bridge configured (default: vmbr0)
-- Local storage available (local-lvm or local-zfs)
+- Local storage available (local-lvm or local-zfs); shared NFS/Ceph storage supported for multi-node clusters
 - TLS inspection root CA certificate on the Proxmox host, if your network performs HTTPS inspection (see below)
+- Multi-node cluster: node IPs resolvable via `/etc/hosts` or present in `/etc/pve/corosync.conf` (DNS not required)
 
 ### Full wizard (recommended)
 
@@ -217,7 +218,7 @@ Security tests are installed separately from normal traffic profiles and run on 
 | Profile | Default security tests |
 |---------|----------------------|
 | fileserver | dlp-network |
-| devops | eicar, dlp-genai-prompt, dlp-genai-file |
+| devops | eicar, dlp-genai-prompt, dlp-genai-file, dlp-genai-image |
 | developer | eicar, dlp-genai-prompt, dlp-genai-file |
 | office-worker | policy-violation, dlp-genai-prompt |
 | sales | policy-violation, dlp-genai-prompt, dlp-genai-file |

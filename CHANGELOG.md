@@ -5,6 +5,42 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.0] - 2026-02-13
+
+### Added
+- Multi-node Proxmox cluster support: containers can be distributed across multiple cluster nodes with auto-balanced or manual placement
+- Node resource table during deployment showing RAM total/used/free, CPU count and utilization, and running container count per node
+- Auto-balance algorithm distributes containers by available RAM, placing higher-memory containers first on nodes with the most headroom
+- Resource feasibility check before deployment: warns at >80% projected node utilization, aborts at >95%
+- Container assignment preview before deployment showing CTID, hostname, profile, and target node for each container
+- `node_to_ip()`: resolves Proxmox node names to IP addresses via `/etc/hosts` then `/etc/pve/corosync.conf`; used by `run_on_node` to avoid SSH failures when cluster node hostnames are not in DNS
+- `_find_template_node()`: cluster-wide CTID lookup using per-node API queries; used for template validation, deploy, and cleanup
+- `_load_config()`: re-sources `~/.proxmox-lab.conf` at the entry point of each command function so values saved during one command are immediately available to subsequent commands in the same session
+
+### Changed
+- `_load_ct_data()` rewritten to query each cluster node individually via `pvesh get /nodes/{node}/lxc` instead of `pvesh get /cluster/resources`; correctly discovers containers on all nodes in both clustered and standalone (non-clustered) Proxmox environments
+- `run_on_node()` routes commands to remote nodes via SSH with transparent stdin passthrough, enabling heredoc-based profile installation to containers on any cluster node
+- `pick_storage()` now queries `pvesh get /nodes/{node}/storage` for the actual target node rather than the global storage list, showing only pools available on the relevant node
+- `cmd_create_template` fully cluster-aware: all operations (`pveam download`, `pct create`, `pct start`, `pct exec`, `pct stop`, `pct template`) route through `run_on_node` to the selected node; TLS certificate streamed into container via stdin rather than `pct push` to support remote nodes
+- `cmd_deploy_containers` cluster-aware: locates template cluster-wide, derives clone strategy based on template storage type (shared → clone on target node; local → clone on template node, migrate if target differs)
+- `cmd_start_containers` cluster-aware: discovers containers on all nodes, routes start commands via `run_on_node`; options 2/3 (Data Center/Branch only) no longer prompt for CTID range when values are already saved to config
+- `cmd_stop_containers` restructured to match Start Containers: full status table showing Running/Stopped across all nodes, 5-option selection menu (all running, DC only, branch only, specific CTIDs, CTID range), stop commands routed via `run_on_node`
+- `cmd_install_traffic_gen` cluster-aware: all `pct exec` calls routed via `run_on_node` to the correct node per container
+- `cmd_show_status` cluster-aware: containers grouped by node in output
+- `cmd_system_cleanup` cluster-aware: discovers lab containers and template across all nodes via per-node queries; stop and destroy operations routed via `run_on_node`; detects and removes Alpine images on all cluster nodes
+- `ctid_to_node()` rewritten to use per-node queries instead of `pvesh get /cluster/resources`
+- `NODE` config variable promoted to `NODES` (space-separated list) for multi-node deployments; existing single-node configs with `NODE=` are automatically promoted on load
+- `devops` default security tests updated to include `dlp-genai-image` in addition to `eicar`, `dlp-genai-prompt`, and `dlp-genai-file`
+
+### Fixed
+- Template creation always used the local node even when a different node was specified in the prompt
+- Container discovery only returned containers on the primary (local) node in multi-node deployments, causing Start Containers, Stop Containers, Install Traffic, Status, and Cleanup to miss remote containers entirely
+- System cleanup failed to detect or destroy the template when it resided on a non-local cluster node
+- System cleanup failed to detect or remove Alpine images downloaded to remote nodes during template creation
+- Template validation in deployment used local-only `pct status`, failing when the template was on a different cluster node
+- Config values (e.g., `HQ_START`, `BRANCH_START`) saved during a wizard run were unavailable to subsequent standalone commands in the same session due to subshell variable isolation; each command now re-sources the config file on entry
+- Stop Containers prompted for CTID range even when `HQ_START`/`BRANCH_START` were already saved to config
+
 ## [1.2.4] - 2026-02-12
 
 ### Changed
@@ -98,6 +134,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `browse_random()` invalid test operator (`-file` → `-f`) in `random-timing.sh`
 - `RUNNING_CONTAINERS` in `cmd_install_traffic_gen` now correctly filters to running containers only (`pct list` filtered by status field)
 
+[2.0.0]: https://github.com/mpreissner/proxmox-lab-scripts/compare/v1.2.4...v2.0.0
 [1.2.4]: https://github.com/mpreissner/proxmox-lab-scripts/compare/v1.2.3...v1.2.4
 [1.2.3]: https://github.com/mpreissner/proxmox-lab-scripts/compare/v1.2.2...v1.2.3
 [1.2.2]: https://github.com/mpreissner/proxmox-lab-scripts/compare/v1.2.1...v1.2.2
