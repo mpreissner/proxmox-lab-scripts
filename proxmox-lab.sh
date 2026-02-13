@@ -13,7 +13,7 @@ YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 CYAN='\033[0;36m'
 NC='\033[0m'
-VERSION="1.2.2"
+VERSION="1.2.3"
 
 CONFIG_FILE="${HOME}/.proxmox-lab.conf"
 if [ -f "$CONFIG_FILE" ]; then
@@ -27,7 +27,7 @@ read_with_default() {
   local var_name="$3"
 
   if [ -n "$default" ]; then
-    read -p "$(echo -e ${prompt} [${GREEN}${default}${NC}]: )" input
+    read -p "$(echo -e "${prompt} [${GREEN}${default}${NC}]: ")" input
     eval "$var_name=\"${input:-$default}\""
   else
     while true; do
@@ -1074,9 +1074,16 @@ TARGETS=(
   "https://www.box.com"
   "https://mega.nz"
 )
+UA_POOL=(
+  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36"
+  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36 Edg/119.0.0.0"
+  "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36"
+  "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:120.0) Gecko/20100101 Firefox/120.0"
+)
+UA="${UA_POOL[$((RANDOM % ${#UA_POOL[@]}))]}"
 TARGET="${TARGETS[$((RANDOM % ${#TARGETS[@]}))]}"
 echo "[$(date)] Policy test: Attempting access to blocked site (${TARGET})"
-curl -s -m 10 "$TARGET" > /dev/null 2>&1 || true
+curl -s -A "$UA" -m 10 "$TARGET" > /dev/null 2>&1 || true
 EOF
       ;;
 
@@ -1090,14 +1097,20 @@ if is_business_hours; then
   exit 0
 fi
 echo "[$(date)] UEBA test: After-hours access simulation"
-curl -s -m 10 https://outlook.office365.com > /dev/null 2>&1
+UA_POOL=(
+  "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.1 Safari/605.1.15"
+  "Mozilla/5.0 (iPhone; CPU iPhone OS 17_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.1 Mobile/15E148 Safari/604.1"
+  "Mozilla/5.0 (iPad; CPU OS 17_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.1 Mobile/15E148 Safari/604.1"
+)
+UA="${UA_POOL[$((RANDOM % ${#UA_POOL[@]}))]}"
+curl -s -A "$UA" -m 10 https://outlook.office365.com > /dev/null 2>&1
 sleep $(random_delay 5 15)
-curl -s -m 10 https://teams.microsoft.com > /dev/null 2>&1
+curl -s -A "$UA" -m 10 https://teams.microsoft.com > /dev/null 2>&1
 if [ $((RANDOM % 2)) -eq 0 ]; then
-  curl -s -m 10 https://sharepoint.com > /dev/null 2>&1
+  curl -s -A "$UA" -m 10 https://sharepoint.com > /dev/null 2>&1
 fi
 if [ $((RANDOM % 3)) -eq 0 ]; then
-  curl -s -m 10 https://portal.azure.com > /dev/null 2>&1
+  curl -s -A "$UA" -m 10 https://portal.azure.com > /dev/null 2>&1
 fi
 EOF
       ;;
@@ -1245,9 +1258,16 @@ random_delay() {
 
 random_user_agent() {
   local agents=(
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"
-    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36"
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36"
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/118.0.0.0 Safari/537.36"
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36 Edg/119.0.0.0"
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/118.0.0.0 Safari/537.36 Edg/118.0.2088.76"
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.1 Safari/605.1.15"
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 13_6) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15"
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36"
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:120.0) Gecko/20100101 Firefox/120.0"
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:120.0) Gecko/20100101 Firefox/120.0"
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36"
   )
   echo "${agents[$((RANDOM % ${#agents[@]}))]}"
 }
@@ -1287,10 +1307,10 @@ backup_to_cloud() {
   echo "[$(date)] File server: Cloud backup sync"
 
   # OneDrive sync
-  curl -s -A "OneDriveSync/1.0" https://onedrive.live.com > /dev/null 2>&1
+  curl -s -A "Microsoft OneDrive Sync 21.220.1024.0005 (Windows NT 10.0; Win64; x64)" https://onedrive.live.com > /dev/null 2>&1
 
   # Dropbox sync
-  curl -s -A "DropboxSync/2.0" https://www.dropbox.com > /dev/null 2>&1
+  curl -s -A "Dropbox/164.4.3551 (Windows; 10; Pro)" https://www.dropbox.com > /dev/null 2>&1
 
   # (DLP tests handled by security-tests/dlp-network.sh if enabled)
 }
@@ -1307,7 +1327,7 @@ backup_to_cloud
 sleep $(random_delay 30 90)
 
 # AWS S3 simulation
-curl -s https://s3.amazonaws.com > /dev/null 2>&1
+curl -s -A "aws-cli/2.13.25 Python/3.11.5 Windows/10 exe/AMD64" https://s3.amazonaws.com > /dev/null 2>&1
 EOF
       ;;
 
@@ -1319,20 +1339,20 @@ source /opt/traffic-gen/utils/random-timing.sh
 echo "[$(date)] Web app: External API calls"
 
 # Payment processor
-curl -s https://api.stripe.com > /dev/null 2>&1
+curl -s -A "Stripe-Node/12.18.0 (https://github.com/stripe/stripe-node)" https://api.stripe.com > /dev/null 2>&1
 sleep $(random_delay 5 15)
 
 # CDN assets
-curl -s https://cdn.jsdelivr.net > /dev/null 2>&1
-curl -s https://cdnjs.cloudflare.com > /dev/null 2>&1
+curl -s -A "Mozilla/5.0 (compatible; WebServer/1.0; +http://example.com)" https://cdn.jsdelivr.net > /dev/null 2>&1
+curl -s -A "Mozilla/5.0 (compatible; WebServer/1.0; +http://example.com)" https://cdnjs.cloudflare.com > /dev/null 2>&1
 
 # Certificate validation
-curl -s http://ocsp.digicert.com > /dev/null 2>&1
+curl -s -A "OpenSSL/1.1.1" http://ocsp.digicert.com > /dev/null 2>&1
 
 # Database backup to S3
 if [ $((RANDOM % 20)) -eq 0 ]; then
   echo "[$(date)] Web app: S3 backup"
-  curl -s https://s3.amazonaws.com > /dev/null 2>&1
+  curl -s -A "aws-cli/2.13.25 Python/3.11.5 Linux/x86_64" https://s3.amazonaws.com > /dev/null 2>&1
 fi
 EOF
       ;;
@@ -1345,17 +1365,17 @@ source /opt/traffic-gen/utils/random-timing.sh
 echo "[$(date)] Email server: Mail relay operations"
 
 # Office 365 SMTP relay
-curl -s https://outlook.office365.com > /dev/null 2>&1
+curl -s -A "Microsoft Exchange Server 2019" https://outlook.office365.com > /dev/null 2>&1
 sleep $(random_delay 10 30)
 
 # Google Workspace
-curl -s https://mail.google.com > /dev/null 2>&1
+curl -s -A "Postfix/3.7.2" https://mail.google.com > /dev/null 2>&1
 
 # Spam filter updates
-curl -s https://www.spamhaus.org > /dev/null 2>&1
+curl -s -A "SpamAssassin/3.4.6" https://www.spamhaus.org > /dev/null 2>&1
 
 # Anti-virus definitions
-curl -s https://www.clamav.net > /dev/null 2>&1
+curl -s -A "ClamAV/1.0.3" https://www.clamav.net > /dev/null 2>&1
 EOF
       ;;
 
@@ -1367,18 +1387,18 @@ source /opt/traffic-gen/utils/random-timing.sh
 echo "[$(date)] Monitoring: System checks"
 
 # Ubuntu/Debian repos
-curl -s http://archive.ubuntu.com/ubuntu > /dev/null 2>&1
-curl -s http://security.ubuntu.com/ubuntu > /dev/null 2>&1
+curl -s -A "Debian APT-HTTP/1.3 (2.6.1) non-interactive" http://archive.ubuntu.com/ubuntu > /dev/null 2>&1
+curl -s -A "Debian APT-HTTP/1.3 (2.6.1) non-interactive" http://security.ubuntu.com/ubuntu > /dev/null 2>&1
 
 # Monitoring services
-curl -s https://api.datadoghq.com > /dev/null 2>&1
-curl -s https://api.newrelic.com > /dev/null 2>&1
+curl -s -A "Datadog Agent/7.47.0" https://api.datadoghq.com > /dev/null 2>&1
+curl -s -A "NewRelic-PythonAgent/8.10.0 (Python 3.11.5; Linux)" https://api.newrelic.com > /dev/null 2>&1
 
 # Container registry
-curl -s https://registry.hub.docker.com > /dev/null 2>&1
+curl -s -A "docker/24.0.5 go/go1.20.6 git-commit/ced0996 kernel/5.15.0 os/linux arch/amd64" https://registry.hub.docker.com > /dev/null 2>&1
 
 # GitHub API
-curl -s https://api.github.com > /dev/null 2>&1
+curl -s -A "GitHubActions/1.0" https://api.github.com > /dev/null 2>&1
 EOF
       ;;
 
@@ -1391,18 +1411,18 @@ source /opt/traffic-gen/utils/genai.sh 2>/dev/null || true
 echo "[$(date)] DevOps: Build pipeline activity"
 
 # npm packages
-curl -s https://registry.npmjs.org > /dev/null 2>&1
+curl -s -A "npm/10.2.0 node/v20.9.0 linux x64 workspaces/false" https://registry.npmjs.org > /dev/null 2>&1
 sleep $(random_delay 5 15)
 
 # PyPI
-curl -s https://pypi.org > /dev/null 2>&1
+curl -s -A "pip/23.3.1 {\"ci\":null,\"cpu\":\"x86_64\",\"distro\":{\"name\":\"Ubuntu\",\"version\":\"22.04\"}}" https://pypi.org > /dev/null 2>&1
 
 # GitHub
-curl -s https://github.com > /dev/null 2>&1
-curl -s https://api.github.com > /dev/null 2>&1
+curl -s -A "git/2.40.1" https://github.com > /dev/null 2>&1
+curl -s -A "GitHub-Actions/1.0" https://api.github.com > /dev/null 2>&1
 
 # Docker Hub
-curl -s https://hub.docker.com > /dev/null 2>&1
+curl -s -A "docker/24.0.5 go/go1.20.6 git-commit/ced0996 kernel/5.15.0 os/linux arch/amd64" https://hub.docker.com > /dev/null 2>&1
 
 # GenAI — devops uses AI for automation scripts and documentation
 if [ $((RANDOM % 3)) -eq 0 ]; then
@@ -1423,14 +1443,14 @@ source /opt/traffic-gen/utils/random-timing.sh
 echo "[$(date)] Database: Backup and replication"
 
 # Cloud database services
-curl -s https://aws.amazon.com/rds > /dev/null 2>&1
+curl -s -A "aws-sdk-java/1.12.500 Linux/5.15.0-86-generic OpenJDK_64-Bit_Server_VM/11.0.19" https://aws.amazon.com/rds > /dev/null 2>&1
 sleep $(random_delay 10 30)
 
 # Backup to S3
-curl -s https://s3.amazonaws.com > /dev/null 2>&1
+curl -s -A "Boto3/1.28.57 Python/3.11.5 Linux/5.15.0-86-generic Botocore/1.31.57" https://s3.amazonaws.com > /dev/null 2>&1
 
 # Azure SQL
-curl -s https://azure.microsoft.com > /dev/null 2>&1
+curl -s -A "azsdk-python-azure-mgmt-sql/4.0.0 Python/3.11.5 (Linux-5.15.0-86-generic-x86_64)" https://azure.microsoft.com > /dev/null 2>&1
 EOF
       ;;
 
@@ -1465,11 +1485,18 @@ source /opt/traffic-gen/utils/random-timing.sh
 
 DOMAINS=/opt/traffic-gen/domains/office-worker.txt
 
+UA_POOL=(
+  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36"
+  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36 Edg/119.0.0.0"
+  "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36"
+  "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:120.0) Gecko/20100101 Firefox/120.0"
+)
+UA="${UA_POOL[$((RANDOM % ${#UA_POOL[@]}))]}"
+
 if ! is_business_hours; then
-  # Minimal after-hours activity
   if [ $((RANDOM % 4)) -eq 0 ]; then
     echo "[$(date)] Office worker: After-hours email check"
-    curl -s https://outlook.office365.com > /dev/null 2>&1
+    curl -s -A "$UA" https://outlook.office365.com > /dev/null 2>&1
   fi
   exit 0
 fi
@@ -1480,31 +1507,26 @@ echo "[$(date)] Office worker: Business hours activity (Hour: $HOUR)"
 
 # Morning routine (8-10am)
 if [ $HOUR -ge 8 ] && [ $HOUR -lt 10 ]; then
-  curl -s https://outlook.office365.com > /dev/null 2>&1
+  curl -s -A "$UA" https://outlook.office365.com > /dev/null 2>&1
   sleep $(random_delay 5 15)
   browse_random "$DOMAINS" 2
 
 # Lunch time (12-1pm) - personal browsing
 elif is_lunch_time; then
   echo "[$(date)] Office worker: Lunch time personal browsing"
-  curl -s https://www.amazon.com > /dev/null 2>&1
+  curl -s -A "$UA" https://www.amazon.com > /dev/null 2>&1
   sleep $(random_delay 5 10)
-  # Try social media (will be blocked)
-  curl -s https://www.facebook.com > /dev/null 2>&1 || true
-  curl -s https://www.youtube.com > /dev/null 2>&1
+  curl -s -A "$UA" https://www.facebook.com > /dev/null 2>&1 || true
+  curl -s -A "$UA" https://www.youtube.com > /dev/null 2>&1
   browse_random "$DOMAINS" 3
 
 # Regular work hours
 else
-  # SaaS apps
-  curl -s https://www.salesforce.com > /dev/null 2>&1
+  curl -s -A "$UA" https://www.salesforce.com > /dev/null 2>&1
   sleep $(random_delay 5 15)
-  curl -s https://slack.com > /dev/null 2>&1
-
-  # Document collaboration
-  curl -s https://docs.google.com > /dev/null 2>&1
+  curl -s -A "$UA" https://slack.com > /dev/null 2>&1
+  curl -s -A "$UA" https://docs.google.com > /dev/null 2>&1
   browse_random "$DOMAINS" 2
-
   # (Policy violation tests handled by security-tests/policy-violation.sh if enabled)
 fi
 EOF
@@ -1523,21 +1545,22 @@ fi
 
 echo "[$(date)] Sales: CRM and prospecting activity"
 
-# Heavy SaaS usage
-curl -s https://www.salesforce.com > /dev/null 2>&1
+UA_POOL=(
+  "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.1 Safari/605.1.15"
+  "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36"
+  "Mozilla/5.0 (Macintosh; Intel Mac OS X 13_6) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15"
+)
+UA="${UA_POOL[$((RANDOM % ${#UA_POOL[@]}))]}"
+
+curl -s -A "$UA" https://www.salesforce.com > /dev/null 2>&1
 sleep $(random_delay 10 20)
 
-curl -s https://www.linkedin.com > /dev/null 2>&1
+curl -s -A "$UA" https://www.linkedin.com > /dev/null 2>&1
 sleep $(random_delay 5 15)
 
-# Travel booking
-curl -s https://www.expedia.com > /dev/null 2>&1
-
-# Webinar platforms
-curl -s https://zoom.us > /dev/null 2>&1
-
-# Marketing automation
-curl -s https://www.hubspot.com > /dev/null 2>&1
+curl -s -A "$UA" https://www.expedia.com > /dev/null 2>&1
+curl -s -A "$UA" https://zoom.us > /dev/null 2>&1
+curl -s -A "$UA" https://www.hubspot.com > /dev/null 2>&1
 
 # GenAI — sales uses AI to draft outreach, research prospects, prep for calls
 if [ $((RANDOM % 2)) -eq 0 ]; then
@@ -1555,34 +1578,42 @@ source /opt/traffic-gen/utils/random-timing.sh
 source /opt/traffic-gen/utils/genai.sh 2>/dev/null || true
 
 if ! is_business_hours; then
-  # Devs work late sometimes
   if [ $((RANDOM % 3)) -eq 0 ]; then
     echo "[$(date)] Developer: After-hours coding"
-    curl -s https://github.com > /dev/null 2>&1
+    curl -s -A "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36" https://github.com > /dev/null 2>&1
   fi
   exit 0
 fi
 
 echo "[$(date)] Developer: Development activity"
 
-# Code repositories
-curl -s https://github.com > /dev/null 2>&1
+UA_POOL=(
+  "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36"
+  "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:120.0) Gecko/20100101 Firefox/120.0"
+  "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36"
+  "Mozilla/5.0 (X11; Ubuntu; Linux x86_64; rv:120.0) Gecko/20100101 Firefox/120.0"
+)
+UA="${UA_POOL[$((RANDOM % ${#UA_POOL[@]}))]}"
+
+# Code repositories — alternate browser and git CLI
+if [ $((RANDOM % 2)) -eq 0 ]; then
+  curl -s -A "git/2.42.0" https://github.com > /dev/null 2>&1
+else
+  curl -s -A "$UA" https://github.com > /dev/null 2>&1
+fi
 sleep $(random_delay 10 30)
 
-# Stack Overflow
-curl -s https://stackoverflow.com > /dev/null 2>&1
+curl -s -A "$UA" https://stackoverflow.com > /dev/null 2>&1
 
-# Package managers
-curl -s https://registry.npmjs.org > /dev/null 2>&1
+# Package managers — CLI agents
+curl -s -A "npm/10.2.0 node/v20.9.0 darwin arm64" https://registry.npmjs.org > /dev/null 2>&1
 sleep $(random_delay 5 15)
 
-curl -s https://pypi.org > /dev/null 2>&1
+curl -s -A "pip/23.3.1" https://pypi.org > /dev/null 2>&1
 
-# Cloud consoles
-curl -s https://console.aws.amazon.com > /dev/null 2>&1
+curl -s -A "$UA" https://console.aws.amazon.com > /dev/null 2>&1
 
-# Docker
-curl -s https://hub.docker.com > /dev/null 2>&1
+curl -s -A "docker/24.0.5 go/go1.21.3 darwin/arm64" https://hub.docker.com > /dev/null 2>&1
 
 # GenAI — developers are heavy AI coding assistant users
 genai_api_call "$(genai_random_prompt)"
@@ -1631,27 +1662,28 @@ fi
 
 echo "[$(date)] Executive: Light usage pattern"
 
-# Email
-curl -s https://outlook.office365.com > /dev/null 2>&1
+UA_POOL=(
+  "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.1 Safari/605.1.15"
+  "Mozilla/5.0 (Macintosh; Intel Mac OS X 13_6) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15"
+)
+UA="${UA_POOL[$((RANDOM % ${#UA_POOL[@]}))]}"
+
+curl -s -A "$UA" https://outlook.office365.com > /dev/null 2>&1
 sleep $(random_delay 15 45)
 
-# Business news and intel
-curl -s https://www.wsj.com > /dev/null 2>&1
-curl -s https://www.bloomberg.com > /dev/null 2>&1
+curl -s -A "$UA" https://www.wsj.com > /dev/null 2>&1
+curl -s -A "$UA" https://www.bloomberg.com > /dev/null 2>&1
 browse_random "$DOMAINS" 3
 
-# GenAI — executives use AI for briefings, summaries, and drafting comms
 genai_browse
 if [ $((RANDOM % 2)) -eq 0 ]; then
   genai_api_call "$(genai_random_prompt)"
 fi
 
-# Video conferencing
-curl -s https://zoom.us > /dev/null 2>&1
+curl -s -A "$UA" https://zoom.us > /dev/null 2>&1
 
-# Travel
 if [ $((RANDOM % 5)) -eq 0 ]; then
-  curl -s https://www.united.com > /dev/null 2>&1
+  curl -s -A "$UA" https://www.united.com > /dev/null 2>&1
 fi
 EOF
       ;;

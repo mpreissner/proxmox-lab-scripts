@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.3] - 2026-02-12
+
+### Changed
+- `random_user_agent()` updated with 10 complete, realistic browser user agent strings (previously 3 truncated placeholders)
+- Server profiles now send role-appropriate SDK and tool user agents: OneDrive Sync, Dropbox, aws-cli (fileserver); Stripe-Node, OpenSSL (webapp); Exchange Server, Postfix, SpamAssassin, ClamAV (email); Datadog Agent, NewRelic, Docker, GitHub Actions, Debian APT (monitoring); npm, pip, git, GitHub Actions, Docker (devops); aws-sdk-java, Boto3, azsdk-python (database)
+- User profiles now pick from persona-specific browser UA pools per run: Windows/Mac mix (office-worker), Mac-heavy Safari/Chrome (sales), Mac/Linux with CLI alternation for package managers (developer), Mac Safari (executive)
+- `security-tests/policy-violation.sh` updated to send a browser UA with each request
+- `security-tests/ueba.sh` updated with Mac/iOS UA pool (Mac Safari, iPhone Safari, iPad Safari) to simulate exec accessing O365 after hours from a personal device
+
+### Fixed
+- `read_with_default()` prompt displayed garbled output when the default value contained `*` characters (e.g., cron expressions like `*/30 * * * *`); unquoted `${default}` inside the `$(echo -e ...)` command substitution caused glob expansion against the current directory; fixed by double-quoting the echo argument
+
 ## [1.2.2] - 2026-02-13
 
 ### Changed
@@ -83,7 +95,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `browse_random()` invalid test operator (`-file` → `-f`) in `random-timing.sh`
 - `RUNNING_CONTAINERS` in `cmd_install_traffic_gen` now correctly filters to running containers only (`pct list` filtered by status field)
 
-[Unreleased]: https://github.com/mpreissner/proxmox-lab-scripts/compare/v1.2.2...HEAD
+[Unreleased]: https://github.com/mpreissner/proxmox-lab-scripts/compare/v1.2.3...HEAD
+[1.2.3]: https://github.com/mpreissner/proxmox-lab-scripts/compare/v1.2.2...v1.2.3
 [1.2.2]: https://github.com/mpreissner/proxmox-lab-scripts/compare/v1.2.1...v1.2.2
 [1.2.1]: https://github.com/mpreissner/proxmox-lab-scripts/compare/v1.2.0...v1.2.1
 [1.2.0]: https://github.com/mpreissner/proxmox-lab-scripts/compare/v1.1.1...v1.2.0
