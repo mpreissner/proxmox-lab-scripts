@@ -1,8 +1,6 @@
 # Proxmox Lab Scripts
 
-Interactive shell scripts for deploying and managing Proxmox LXC container-based security testing labs. These scripts automate the creation of realistic network environments with simulated traffic patterns for testing security solutions like Zscaler, CASB, DLP, and UEBA systems.
-
-The recommended entry point is the consolidated tool `proxmox-lab.sh`, which combines all scripts into a single interactive menu. The individual scripts are retained and continue to work independently.
+An interactive shell script for deploying and managing a Proxmox LXC container-based security testing lab. Automates the creation of a realistic multi-site enterprise network with simulated traffic patterns for testing security solutions like Zscaler, CASB, DLP, and UEBA systems.
 
 ## Lab Architecture
 
@@ -17,27 +15,27 @@ This architecture allows realistic simulation of a multi-site enterprise environ
 
 ## Overview
 
-This collection provides a complete workflow for building a multi-container lab environment that generates realistic web traffic patterns mimicking real-world enterprise scenarios.
+Provides a complete workflow for building a multi-container lab environment that generates realistic web traffic patterns mimicking real-world enterprise scenarios.
 
 ### What It Does
 
 - **Creates Alpine LXC templates** with pre-configured utilities
 - **Deploys HQ and Branch network containers** with appropriate configurations
-- **Generates realistic traffic patterns** for different user/server profiles
-- **Simulates security events** (DLP triggers, malware downloads, policy violations, UEBA anomalies)
+- **Generates realistic traffic patterns** for different user/server profiles, including GenAI platform usage
+- **Configures security tests** independently of normal traffic — DLP (network, GenAI prompt/file/image OCR), AV/malware, policy violations, UEBA anomalies
 
-## Scripts
+## Script
 
-### `proxmox-lab.sh` — Consolidated Tool (Recommended)
+### `proxmox-lab.sh`
 
-A single interactive menu that combines all four scripts into one tool.
+A single interactive menu covering the full lab lifecycle.
 
 **Menu options:**
 1. **Create Template** — create an Alpine LXC template
 2. **Deploy Containers** — clone and configure lab containers
 3. **Start Containers** — start stopped lab-managed containers
-4. **Stop Containers** — stop all running lab-managed containers
-5. **Install Traffic Generator** — push traffic profiles to containers
+4. **Install Traffic Generator** — push traffic profiles to containers
+5. **Stop Containers** — stop all running lab-managed containers
 6. **Show Status** — view all containers with running state and traffic gen status at a glance
 7. **Full Setup Wizard** — runs steps 1 → 2 → 3 → 4 in sequence
 8. **Update** — check GitHub for a newer version, show changelog, and self-patch the script in place
@@ -66,113 +64,6 @@ On first run, the script prompts for all values as usual. After completing any c
 
 ---
 
-### Individual Scripts
-
-The four original scripts remain fully functional and can be used independently if preferred.
-
----
-
-### 1. `create-template.sh`
-Creates a base Alpine Linux LXC template with traffic generation framework.
-
-**Features:**
-- Interactive configuration wizard
-- Auto-detects latest Alpine version
-- Installs essential packages (curl, wget, python3, jq, cron)
-- Supports local storage options (local-lvm, local-zfs, custom)
-
-**Usage:**
-```bash
-./create-template.sh
-```
-
----
-
-### 2. `deploy-container.sh`
-Clones and deploys lab containers from the template.
-
-**Features:**
-- Deploys 11 total containers (6 HQ servers, 5 Branch users)
-- Flexible CTID and VLAN configuration
-- Selective deployment (all, HQ only, Branch only)
-- Auto-detects and validates templates
-- Skips existing containers
-
-**Container Types:**
-
-**HQ ServerNet (6 containers):**
-- `hq-fileserver` - File server with cloud sync
-- `hq-webapp` - Web application server
-- `hq-email` - Email relay server
-- `hq-monitoring` - Monitoring and package updates (512MB)
-- `hq-devops` - DevOps build server (512MB)
-- `hq-database` - Database server
-
-**Branch UserNet (5 containers):**
-- `branch-worker1/2` - Office workers
-- `branch-sales` - Sales representative
-- `branch-dev` - Developer workstation (512MB)
-- `branch-exec` - Executive (UEBA target)
-
-**Usage:**
-```bash
-./deploy-container.sh
-```
-
----
-
-### 3. `install-traffic-gen.sh`
-Installs traffic generation profiles on containers.
-
-**Features:**
-- Auto-detect running containers
-- Multiple installation scopes (all, HQ, Branch, custom)
-- Traffic intensity levels (light, normal, heavy, custom)
-- Installation modes (full, framework only, update profiles)
-- Displays domain information for each profile
-
-**Traffic Profiles:**
-
-| Profile | Domains/Services | Security Tests |
-|---------|-----------------|----------------|
-| **fileserver** | OneDrive, Dropbox, S3 | DLP (SSN/CCN exfiltration) |
-| **webapp** | Stripe API, CDN services | Certificate validation |
-| **email** | Office 365, Gmail, SpamHaus | Email security |
-| **monitoring** | Ubuntu repos, Datadog, Docker Hub | Package management |
-| **devops** | npm, PyPI, GitHub, Docker | EICAR malware test |
-| **database** | AWS RDS, Azure SQL, S3 | Cloud backup |
-| **office-worker** | Salesforce, Slack, Google Docs, social media | Policy violations |
-| **sales** | LinkedIn, Salesforce, Zoom, travel sites | SaaS heavy usage |
-| **developer** | GitHub, StackOverflow, AWS Console | Developer tools |
-| **executive** | Office 365, WSJ, Bloomberg | UEBA (after-hours email) |
-
-**Traffic Intensity:**
-- **Light:** Servers every 30 min, Office every 10 min
-- **Normal:** Servers every 15 min, Office every 5 min (default)
-- **Heavy:** Servers every 5 min, Office every 2 min
-
-**Usage:**
-```bash
-./install-traffic-gen.sh
-```
-
----
-
-### 4. `start-containers.sh`
-Manages container startup with intelligent status tracking.
-
-**Features:**
-- Shows current status of all containers
-- Multiple selection methods (all, HQ, Branch, specific, range)
-- Parallel or sequential startup modes
-- Optional boot wait period
-- Post-startup verification
-
-**Usage:**
-```bash
-./start-containers.sh
-```
-
 ## Quick Start
 
 ### Prerequisites
@@ -180,56 +71,46 @@ Manages container startup with intelligent status tracking.
 - Root or sudo access
 - Network bridge configured (default: vmbr0)
 - Local storage available (local-lvm or local-zfs)
+- TLS inspection root CA certificate on the Proxmox host, if your network performs HTTPS inspection (see below)
 
-### Option A — Consolidated Tool (Recommended)
+### Full wizard (recommended)
 
-Run the unified script and use the interactive menu, or jump straight to the full wizard:
+Run all four setup steps in sequence:
 
 ```bash
 ./proxmox-lab.sh wizard
 ```
 
-The wizard walks through all four steps in sequence, prompting for input at each stage.
+The wizard walks through all four steps in sequence, prompting for input at each stage, then saves your settings automatically.
 
-To run the menu instead:
+### Step by step
+
+Each step can also be run individually:
+
 ```bash
-./proxmox-lab.sh
+./proxmox-lab.sh create-template   # Step 1 — create Alpine template
+./proxmox-lab.sh deploy            # Step 2 — clone 11 containers
+./proxmox-lab.sh start             # Step 3 — start containers
+./proxmox-lab.sh install-traffic   # Step 4 — install traffic profiles
 ```
 
-### Option B — Individual Scripts
+### TLS Inspection Certificate
 
-Each step can be run separately using the original scripts:
+If your network performs TLS inspection (e.g., Zscaler), copy your root CA certificate to the Proxmox host before running `create-template`:
 
-1. **Create the template:**
-   ```bash
-   ./create-template.sh
-   ```
-   - Choose template ID (e.g., 150)
-   - Select storage and network settings
-   - Wait for template creation (~2-3 minutes)
+```bash
+scp /path/to/ZscalerRootCertificate.crt root@<proxmox-host>:/root/
+```
 
-2. **Deploy containers:**
-   ```bash
-   ./deploy-container.sh
-   ```
-   - Select source template
-   - Configure VLANs and CTID ranges
-   - Deploy HQ and/or Branch containers
+During step 1 (`create-template`), the script prompts for the certificate path on the host. If provided, the certificate is installed into the template via Alpine's `update-ca-certificates`, and every cloned container inherits it automatically. The path is saved to `~/.proxmox-lab.conf` for subsequent runs.
 
-3. **Start containers:**
-   ```bash
-   ./start-containers.sh
-   ```
-   - Select containers to start
-   - Choose parallel startup for speed
+Zscaler offers a choice of using their built-in root certificate or uploading a custom one — either works. If you are not using TLS inspection, press Enter to skip.
 
-4. **Install traffic generators:**
-   ```bash
-   ./install-traffic-gen.sh
-   ```
-   - Select traffic intensity
-   - Choose installation mode
-   - Profiles auto-assigned based on container role
+To verify the certificate is trusted in a container after deployment:
+
+```bash
+pct exec 200 -- curl -sv https://www.google.com 2>&1 | grep -E "SSL|issuer|subject"
+```
 
 ### Verification
 
@@ -239,7 +120,7 @@ pct exec 200 -- tail -f /var/log/messages
 pct exec 220 -- tail -f /var/log/messages
 ```
 
-Check cron schedules:
+Check cron schedules (traffic + security tests):
 ```bash
 pct exec 200 -- crontab -l
 ```
@@ -248,6 +129,19 @@ Manual traffic generation:
 ```bash
 pct exec 200 -- /opt/traffic-gen/traffic-gen.sh fileserver
 ```
+
+Run all security tests manually:
+```bash
+pct exec 200 -- /opt/traffic-gen/run-security-tests.sh
+```
+
+Run a single security test manually:
+```bash
+pct exec 224 -- bash /opt/traffic-gen/security-tests/ueba.sh
+pct exec 200 -- bash /opt/traffic-gen/security-tests/dlp-network.sh
+```
+
+---
 
 ## Default Configuration
 
@@ -267,24 +161,66 @@ pct exec 200 -- /opt/traffic-gen/traffic-gen.sh fileserver
 
 ### Traffic Schedules
 
-| Profile Type | Schedule | Active Hours |
-|-------------|----------|--------------|
+| Cron | Default Schedule | Active Hours |
+|------|-----------------|--------------|
 | Server profiles | Every 15 min | 24/7 |
 | Office profiles | Every 5 min | M-F 8am-6pm |
+| Security tests | Every 30 min | 24/7 (UEBA script self-limits to after-hours) |
+
+---
 
 ## Traffic Patterns
 
 ### Business Hours Simulation
 - **Morning (8-10am):** Email checks, news browsing
-- **Work hours (10am-12pm, 1pm-6pm):** SaaS applications, collaboration tools
+- **Work hours (10am-12pm, 1pm-6pm):** SaaS applications, collaboration tools, GenAI assistants
 - **Lunch (12-1pm):** Personal browsing, shopping, social media attempts
-- **After hours:** Minimal activity, UEBA anomalies (executive profile)
+- **After hours:** Minimal activity (UEBA test fires independently if enabled)
 
-### Security Event Simulation
-- **DLP Triggers:** 10% chance of sensitive data upload (fileserver)
-- **Malware Download:** EICAR test file every ~30 runs (devops)
-- **Policy Violations:** Social media, unauthorized file sharing (office-worker)
-- **UEBA Anomalies:** After-hours access patterns (executive)
+### Traffic Profiles
+
+| Profile | Domains/Services | GenAI |
+|---------|-----------------|-------|
+| **fileserver** | OneDrive, Dropbox, S3 | — |
+| **webapp** | Stripe API, CDN services | — |
+| **email** | Office 365, Gmail, SpamHaus | — |
+| **monitoring** | Ubuntu repos, Datadog, Docker Hub | — |
+| **devops** | npm, PyPI, GitHub, Docker | Browse + API call |
+| **database** | AWS RDS, Azure SQL, S3 | — |
+| **office-worker** | Salesforce, Slack, Google Docs, news | — |
+| **sales** | LinkedIn, Salesforce, Zoom, travel | Browse + API call |
+| **developer** | GitHub, StackOverflow, AWS Console | Browse + API call |
+| **executive** | Office 365, WSJ, Bloomberg, Zoom | Browse + API call |
+
+GenAI browsing visits ChatGPT, Claude, Gemini, HuggingFace, Perplexity, and Poe. API calls submit business-context prompts to the HuggingFace anonymous inference API. Microsoft Copilot is excluded (WebSockets, incompatible with standard TLS inspection).
+
+### Security Tests
+
+Security tests are installed separately from normal traffic profiles and run on their own cron. Enabling or disabling a test is done during Install Traffic Generator (step 4) and takes effect immediately — no container restart needed.
+
+| Test | Category | What It Generates |
+|------|----------|-------------------|
+| `eicar` | AV | EICAR test file download |
+| `dlp-network` | DLP | POST with fake SSN + CCN to HTTPS endpoint |
+| `dlp-genai-prompt` | DLP | JSON prompt with PII to OpenAI/Anthropic/Google API |
+| `dlp-genai-file` | DLP | Multipart document upload with PII to AI file API |
+| `dlp-genai-image` | DLP OCR | ImageMagick-rendered PNG with PII to AI vision API |
+| `policy-violation` | Policy | HTTP access to Dropbox, WeTransfer, Mega, Box |
+| `ueba` | UEBA | After-hours O365, Teams, SharePoint access |
+
+**How GenAI DLP tests work:** The tests POST to real AI API endpoints (OpenAI, Anthropic, Google Gemini) with no valid API key. The server returns 401. Zscaler DLP inspects the outbound request body before the response arrives, so the DLP trigger fires on the request payload regardless. The traffic appears as a real user attempting to use a ChatGPT or Claude API.
+
+**Default test assignments by profile:**
+
+| Profile | Default security tests |
+|---------|----------------------|
+| fileserver | dlp-network |
+| devops | eicar, dlp-genai-prompt, dlp-genai-file |
+| developer | eicar, dlp-genai-prompt, dlp-genai-file |
+| office-worker | policy-violation, dlp-genai-prompt |
+| sales | policy-violation, dlp-genai-prompt, dlp-genai-file |
+| executive | ueba, dlp-genai-prompt |
+| All others | none |
 
 ### Traffic Volume
 - ~20-40 requests per day per domain
@@ -292,17 +228,13 @@ pct exec 200 -- /opt/traffic-gen/traffic-gen.sh fileserver
 - Realistic user agent rotation
 - Business hours enforcement for user profiles
 
+---
+
 ## Customization
 
 ### Custom CTID Ranges
-All scripts support custom CTID ranges. Using the consolidated tool:
 ```bash
 ./proxmox-lab.sh deploy
-# Select HQ only, enter 300 as starting CTID
-```
-Or with the individual script:
-```bash
-./deploy-container.sh
 # Select HQ only, enter 300 as starting CTID
 ```
 
@@ -318,6 +250,20 @@ Or with the individual script:
 # Select "Custom selection"
 # Example: 300:fileserver,301:webapp,320:developer
 ```
+
+### Custom Security Tests
+```bash
+./proxmox-lab.sh install-traffic
+# Step 4 → Custom selection
+# Choose which tests to enable per container
+```
+
+To disable a specific test on a container without reinstalling everything:
+```bash
+pct exec <CTID> -- rm /opt/traffic-gen/security-tests/eicar.sh
+```
+
+---
 
 ## Troubleshooting
 
@@ -355,13 +301,17 @@ pct exec <CTID> -- ping -c 3 8.8.8.8
 pct exec <CTID> -- curl -I https://google.com
 ```
 
+---
+
 ## Safety Notes
 
 ### Traffic Generation
 - Volume is intentionally low (~1-2 requests/hour per domain)
-- Will NOT trigger rate limits or blocklists
+- Will NOT trigger rate limits or blocklists on normal traffic
 - Safe for production internet connections
 - EICAR test file is industry-standard, non-malicious test payload
+- GenAI DLP tests POST to real AI APIs with no valid key — server returns 401, but the outbound request is inspected by Zscaler as intended
+- `dlp-genai-image` installs ImageMagick (~10 MB) on the container when enabled
 
 ### Storage Requirements
 - Each container: ~100-200 MB
@@ -372,6 +322,8 @@ pct exec <CTID> -- curl -I https://google.com
 - Minimal bandwidth usage (<1 Mbps aggregate)
 - No broadcast/multicast traffic
 - VLAN isolation supported
+
+---
 
 ## Use Cases
 
