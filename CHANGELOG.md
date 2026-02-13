@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.1.0] - 2026-02-13
+
+### Added
+- `win-traffic.ps1`: PowerShell traffic generator for Windows VMs; five profiles (office-worker, sales, developer, executive, threat); duration-controlled loop with inter-session delays; logs to `C:\ProgramData\proxmox-lab\traffic-gen.log`; threat profile covers EICAR download, network DLP POST, GenAI DLP prompts to OpenAI/Anthropic/Gemini, and policy violations
+- `setup-scheduled-tasks.ps1`: creates Windows Task Scheduler entries for all five traffic profiles with M–F weekday schedules matching each persona's usage pattern; elevation check at startup; post-registration verification confirms each task was created; `-ScriptPath` parameter for non-default install paths
+- `cmd_install_windows_cert`: installs a Zscaler TLS root certificate on a Windows VM via QEMU guest agent; cluster-aware via `run_on_node` and `_find_vm_node`; displays running VM table across all cluster nodes; prompts for VM ID (saved to config as `WIN_VMID`); reuses `CERT_PATH` from existing config; copies cert to `C:\Windows\Temp` via stdin pipe; installs to Windows Trusted Root CA store via PowerShell; cleans up temp file on completion
+- `_find_vm_node()`: cluster-wide QEMU VM lookup using per-node `pvesh get /nodes/{node}/qemu` queries; mirrors `_find_template_node()` for LXC containers
+- Menu option 9: Install Windows VM Certificate; Exit moved to option 10
+- `windows-cert` direct CLI command: `./proxmox-lab.sh windows-cert`
+- `WIN_VMID` persisted to `~/.proxmox-lab.conf`
+
+### Changed
+- `qm guest file-write` uses stdin pipe (`< cert_file`) instead of shell-expanding file content as a positional argument; safer for base64-encoded PEM certificates
+- `C:\Windows\Temp` used as cert staging path instead of `C:\temp`; always present on Windows, eliminates the `mkdir C:\temp` pre-step
+
 ## [2.0.0] - 2026-02-13
 
 ### Added
@@ -134,6 +149,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `browse_random()` invalid test operator (`-file` → `-f`) in `random-timing.sh`
 - `RUNNING_CONTAINERS` in `cmd_install_traffic_gen` now correctly filters to running containers only (`pct list` filtered by status field)
 
+[2.1.0]: https://github.com/mpreissner/proxmox-lab-scripts/compare/v2.0.0...v2.1.0
 [2.0.0]: https://github.com/mpreissner/proxmox-lab-scripts/compare/v1.2.4...v2.0.0
 [1.2.4]: https://github.com/mpreissner/proxmox-lab-scripts/compare/v1.2.3...v1.2.4
 [1.2.3]: https://github.com/mpreissner/proxmox-lab-scripts/compare/v1.2.2...v1.2.3

@@ -13,7 +13,7 @@ YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 CYAN='\033[0;36m'
 NC='\033[0m'
-VERSION="2.0.0"
+VERSION="2.1.0"
 
 CONFIG_FILE="${HOME}/.proxmox-lab.conf"
 if [ -f "$CONFIG_FILE" ]; then
@@ -91,6 +91,7 @@ CRON_SERVER="${CRON_SERVER:-*/15 * * * *}"
 CRON_OFFICE="${CRON_OFFICE:-*/5 8-18 * * 1-5}"
 CRON_SECURITY="${CRON_SECURITY:-*/30 * * * *}"
 CERT_PATH="${CERT_PATH:-}"
+WIN_VMID="${WIN_VMID:-}"
 EOF
   echo -e "${GREEN}✓ Settings saved to ~/.proxmox-lab.conf${NC}"
 }
@@ -275,6 +276,26 @@ _find_template_node() {
 import sys,json
 for r in json.load(sys.stdin):
     if str(r.get('vmid','')) == '${ctid}':
+        raise SystemExit(0)
+raise SystemExit(1)
+" 2>/dev/null; then
+      echo "$node"
+      return
+    fi
+  done
+}
+
+_find_vm_node() {
+  local vmid="$1"
+  local nodes node
+  nodes=$(get_cluster_nodes 2>/dev/null)
+  [ -z "$nodes" ] && nodes=$(get_local_node)
+  for node in $nodes; do
+    if pvesh get /nodes/"$node"/qemu --output-format json 2>/dev/null | \
+        python3 -c "
+import sys,json
+for r in json.load(sys.stdin):
+    if str(r.get('vmid','')) == '${vmid}':
         raise SystemExit(0)
 raise SystemExit(1)
 " 2>/dev/null; then
@@ -3001,6 +3022,114 @@ cmd_system_cleanup() {
 }
 
 # ============================================================
+# MODULE: Install Windows VM Certificate
+# ============================================================
+
+cmd_install_windows_cert() {
+  _load_config
+  section_header "Install Windows VM Certificate"
+
+  # --- Show running VMs across cluster ---
+  echo ""
+  echo "Running VMs on cluster:"
+  local _nodes _node
+  _nodes=$(get_cluster_nodes 2>/dev/null)
+  [ -z "$_nodes" ] && _nodes=$(get_local_node)
+  printf "  %-8s %-24s %s\n" "VMID" "Name" "Node"
+  printf "  %-8s %-24s %s\n" "--------" "------------------------" "--------"
+  for _node in $_nodes; do
+    pvesh get /nodes/"$_node"/qemu --output-format json 2>/dev/null | python3 -c "
+import sys,json
+node='$_node'
+for r in json.load(sys.stdin):
+    if r.get('status') == 'running':
+        print('  {:<8} {:<24} {}'.format(r.get('vmid',''), r.get('name','-')[:24], node))
+" 2>/dev/null
+  done
+  echo ""
+
+  # --- VM ID ---
+  if [ -n "${WIN_VMID:-}" ]; then
+    read -p "  Windows VM ID [${WIN_VMID}]: " _input
+    WIN_VMID="${_input:-$WIN_VMID}"
+  else
+    while [ -z "${WIN_VMID:-}" ]; do
+      read -p "  Windows VM ID: " WIN_VMID
+    done
+  fi
+
+  # --- Locate VM on cluster ---
+  echo "  Locating VM ${WIN_VMID} on cluster..."
+  local _vm_node
+  _vm_node=$(_find_vm_node "$WIN_VMID")
+  if [ -z "$_vm_node" ]; then
+    echo -e "${RED}  Error: VM ${WIN_VMID} not found on any cluster node.${NC}"
+    return 1
+  fi
+  echo -e "  ${GREEN}Found VM ${WIN_VMID} on node: ${_vm_node}${NC}"
+
+  # --- Check VM is running ---
+  if ! run_on_node "$_vm_node" qm status "$WIN_VMID" 2>/dev/null | grep -q "running"; then
+    echo -e "${RED}  Error: VM ${WIN_VMID} is not running. Start it and try again.${NC}"
+    return 1
+  fi
+
+  # --- Check QEMU guest agent ---
+  echo "  Checking QEMU guest agent..."
+  if ! run_on_node "$_vm_node" qm agent "$WIN_VMID" ping 2>/dev/null; then
+    echo -e "${RED}  Error: QEMU guest agent is not responding on VM ${WIN_VMID}.${NC}"
+    echo "  Install the QEMU guest agent in Windows and ensure the service is running."
+    return 1
+  fi
+  echo -e "  ${GREEN}Guest agent is available.${NC}"
+
+  # --- Certificate path ---
+  echo ""
+  if [ -n "${CERT_PATH:-}" ]; then
+    read -p "  Certificate path [${CERT_PATH}]: " _input
+    CERT_PATH="${_input:-$CERT_PATH}"
+  else
+    read -p "  Certificate path on this host: " CERT_PATH
+  fi
+  if [ -z "$CERT_PATH" ] || [ ! -f "$CERT_PATH" ]; then
+    echo -e "${RED}  Error: Certificate file not found: ${CERT_PATH}${NC}"
+    return 1
+  fi
+
+  local CERT_FILENAME
+  CERT_FILENAME=$(basename "$CERT_PATH")
+  local WIN_TEMP_PATH="C:\\Windows\\Temp\\${CERT_FILENAME}"
+
+  # --- Copy certificate to VM via stdin ---
+  echo ""
+  echo "  Copying certificate to VM ${WIN_VMID}..."
+  if ! run_on_node "$_vm_node" qm guest file-write "$WIN_VMID" "$WIN_TEMP_PATH" < "$CERT_PATH"; then
+    echo -e "${RED}  Error: Failed to copy certificate to VM.${NC}"
+    return 1
+  fi
+  echo -e "  ${GREEN}Certificate copied to ${WIN_TEMP_PATH}${NC}"
+
+  # --- Install certificate to Trusted Root CA store ---
+  echo "  Installing certificate to Trusted Root Certification Authorities..."
+  run_on_node "$_vm_node" qm guest exec "$WIN_VMID" -- \
+    powershell.exe -ExecutionPolicy Bypass -NonInteractive -Command \
+    "\$cert = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2('${WIN_TEMP_PATH}'); \$store = New-Object System.Security.Cryptography.X509Certificates.X509Store('Root','LocalMachine'); \$store.Open('ReadWrite'); \$store.Add(\$cert); \$store.Close()" \
+    2>/dev/null
+  echo -e "  ${GREEN}Certificate install command sent.${NC}"
+
+  # --- Clean up temp file ---
+  run_on_node "$_vm_node" qm guest exec "$WIN_VMID" -- \
+    cmd.exe /c "del \"${WIN_TEMP_PATH}\"" 2>/dev/null || true
+
+  echo ""
+  echo -e "${GREEN}✓ Done. To verify in Windows:${NC}"
+  echo "    Run certmgr.msc → Trusted Root Certification Authorities → Certificates"
+  echo "    Look for: $(basename "${CERT_FILENAME%.*}")"
+
+  _maybe_save_config
+}
+
+# ============================================================
 # MAIN MENU
 # ============================================================
 
@@ -3019,9 +3148,10 @@ main_menu() {
     echo "  6) Show Status"
     echo "  7) Full Setup Wizard  (steps 1 → 2 → 3 → 4)"
     echo "  8) Update"
-    echo "  9) Exit"
+    echo "  9) Install Windows VM Certificate"
+    echo " 10) Exit"
     echo ""
-    read -p "Select option [1-9]: " choice
+    read -p "Select option [1-10]: " choice
 
     case "$choice" in
       1) ( cmd_create_template ) || echo -e "${RED}Operation failed or was aborted.${NC}" ;;
@@ -3032,12 +3162,13 @@ main_menu() {
       6) ( cmd_show_status ) || echo -e "${RED}Operation failed or was aborted.${NC}" ;;
       7) ( cmd_full_wizard ) || echo -e "${RED}Wizard failed or was aborted.${NC}" ;;
       8) ( cmd_update ) || echo -e "${RED}Operation failed or was aborted.${NC}" ;;
-      9|q|Q)
+      9) ( cmd_install_windows_cert ) || echo -e "${RED}Operation failed or was aborted.${NC}" ;;
+      10|q|Q)
         echo "Goodbye!"
         exit 0
         ;;
       *)
-        echo -e "${RED}Invalid option. Please select 1-9.${NC}"
+        echo -e "${RED}Invalid option. Please select 1-10.${NC}"
         ;;
     esac
   done
@@ -3057,6 +3188,7 @@ case "${1:-}" in
   status)           cmd_show_status ;;
   wizard)           cmd_full_wizard ;;
   update)           cmd_update ;;
+  windows-cert)     cmd_install_windows_cert ;;
   _cleanup)         cmd_system_cleanup ;;
   --version|-v)     echo "proxmox-lab.sh v${VERSION}" ;;
   "")               main_menu ;;
@@ -3074,6 +3206,7 @@ case "${1:-}" in
     echo "  status             Show container status"
     echo "  wizard             Full setup wizard"
     echo "  update             Check for updates and self-patch"
+    echo "  windows-cert       Install TLS cert on a Windows VM"
     echo "  --version          Show version"
     echo ""
     echo "Run without arguments for the interactive menu."
