@@ -13,7 +13,7 @@ YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 CYAN='\033[0;36m'
 NC='\033[0m'
-VERSION="1.2.1"
+VERSION="1.2.2"
 
 CONFIG_FILE="${HOME}/.proxmox-lab.conf"
 if [ -f "$CONFIG_FILE" ]; then
@@ -358,8 +358,8 @@ cmd_deploy_containers() {
   echo ""
   echo -e "${BLUE}4. Deployment Scope${NC}"
   echo "What would you like to deploy?"
-  echo "  1) Both HQ and Branch containers (11 total)"
-  echo "  2) HQ ServerNet only (6 containers)"
+  echo "  1) Both Data Center and Branch containers (11 total)"
+  echo "  2) Data Center only (6 containers)"
   echo "  3) Branch UserNet only (5 containers)"
   read -p "Select scope [1-3] (default: 1): " scope_choice
 
@@ -376,11 +376,11 @@ cmd_deploy_containers() {
   # 5. HQ Config
   if $DEPLOY_HQ; then
     echo ""
-    echo -e "${BLUE}5. HQ ServerNet Configuration${NC}"
-    read_with_default "Starting CTID for HQ" "${HQ_START:-200}" "HQ_START"
-    read_with_default "HQ VLAN tag" "${VLAN_HQ:-200}" "VLAN_HQ"
+    echo -e "${BLUE}5. Data Center Configuration${NC}"
+    read_with_default "Starting CTID for Data Center" "${HQ_START:-200}" "HQ_START"
+    read_with_default "Data Center VLAN tag" "${VLAN_HQ:-200}" "VLAN_HQ"
 
-    echo -e "${CYAN}HQ containers will be:${NC}"
+    echo -e "${CYAN}Data Center containers will be:${NC}"
     echo "  CT ${HQ_START}: hq-fileserver"
     echo "  CT $((HQ_START+1)): hq-webapp"
     echo "  CT $((HQ_START+2)): hq-email"
@@ -433,7 +433,7 @@ cmd_deploy_containers() {
 
   if $DEPLOY_HQ; then
     echo ""
-    echo -e "${CYAN}HQ ServerNet:${NC}"
+    echo -e "${CYAN}Data Center:${NC}"
     echo "  VLAN Tag:    ${VLAN_HQ}"
     echo "  CTID Range:  ${HQ_START}-$((HQ_START+5))"
     echo "  Containers:  6"
@@ -459,7 +459,7 @@ cmd_deploy_containers() {
   if $DEPLOY_HQ; then
     echo ""
     echo -e "${GREEN}=========================================="
-    echo "Deploying HQ ServerNet Containers"
+    echo "Deploying Data Center Containers"
     echo -e "==========================================${NC}"
 
     for OFFSET in "${!HQ_CONTAINERS[@]}"; do
@@ -533,7 +533,7 @@ cmd_deploy_containers() {
   section_header "✓ Deployment Complete"
 
   if $DEPLOY_HQ; then
-    echo -e "${CYAN}HQ ServerNet (VLAN ${VLAN_HQ}):${NC}"
+    echo -e "${CYAN}Data Center (VLAN ${VLAN_HQ}):${NC}"
     for OFFSET in "${!HQ_CONTAINERS[@]}"; do
       CTID=$((HQ_START + OFFSET))
       echo "  CT ${CTID}: ${HQ_CONTAINERS[$OFFSET]}"
@@ -606,7 +606,7 @@ cmd_start_containers() {
   echo -e "${BLUE}2. Container Selection${NC}"
   echo "What would you like to start?"
   echo "  1) All stopped containers (${#STOPPED_CONTAINERS[@]} total)"
-  echo "  2) HQ containers only (specify range)"
+  echo "  2) Data Center containers only (specify range)"
   echo "  3) Branch containers only (specify range)"
   echo "  4) Specific containers (enter CTIDs)"
   echo "  5) Range of containers (e.g., 200-205)"
@@ -620,9 +620,9 @@ cmd_start_containers() {
       ;;
 
     2)
-      read_with_default "HQ starting CTID" "${HQ_START:-200}" "HQ_START"
+      read_with_default "Data Center starting CTID" "${HQ_START:-200}" "HQ_START"
       HQ_END=$((HQ_START + 5))
-      echo "Checking HQ containers (${HQ_START}-${HQ_END})..."
+      echo "Checking Data Center containers (${HQ_START}-${HQ_END})..."
       for ctid in $(seq $HQ_START $HQ_END); do
         status=$(get_status $ctid)
         if [ "$status" = "stopped" ]; then
@@ -1681,7 +1681,7 @@ cmd_install_traffic_gen() {
   echo ""
   echo "Installation scope options:"
   echo "  1) Auto-detect and configure all containers with default profiles"
-  echo "  2) HQ containers only (specify range)"
+  echo "  2) Data Center containers only (specify range)"
   echo "  3) Branch containers only (specify range)"
   echo "  4) Custom selection (specify CTIDs)"
   read -p "Select scope [1-4] (default: 1): " scope_choice
@@ -1705,10 +1705,10 @@ cmd_install_traffic_gen() {
       ;;
 
     2)
-      read_with_default "HQ starting CTID" "${HQ_START:-200}" "HQ_START"
+      read_with_default "Data Center starting CTID" "${HQ_START:-200}" "HQ_START"
       HQ_END=$((HQ_START + 5))
 
-      echo "HQ containers (${HQ_START}-${HQ_END}):"
+      echo "Data Center containers (${HQ_START}-${HQ_END}):"
       offset=0
       for profile in fileserver webapp email monitoring devops database; do
         ctid=$((HQ_START + offset))
