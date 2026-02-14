@@ -138,7 +138,7 @@ function Invoke-Traffic {
 # ---------------------------------------------------------------------------
 # Profile: office-worker
 #   Microsoft 365 productivity, SaaS collaboration, lunch/personal browsing
-#   UA: Windows Chrome/Edge/Firefox pool — pick one per session
+#   UA: Windows Chrome/Edge/Firefox pool  -  pick one per session
 # ---------------------------------------------------------------------------
 
 function Invoke-OfficeWorkerSession {
@@ -193,7 +193,7 @@ function Invoke-OfficeWorkerSession {
 # ---------------------------------------------------------------------------
 # Profile: sales
 #   CRM, prospecting, travel, GenAI for pitch prep
-#   UA: Mac Safari/Chrome pool — pick one per session
+#   UA: Mac Safari/Chrome pool  -  pick one per session
 # ---------------------------------------------------------------------------
 
 function Invoke-SalesSession {
@@ -252,7 +252,7 @@ function Invoke-SalesSession {
         Start-RandomDelay -Min 5 -Max 15
     }
 
-    # GenAI API call (business prompt — inspected by Zscaler regardless of response)
+    # GenAI API call (business prompt  -  inspected by Zscaler regardless of response)
     $prompt = @(
         "Draft a follow-up email to prospect Jane Doe at Acme Corp after our Q1 pricing call.",
         "Summarize our top 3 competitive advantages against CrowdStrike for a healthcare pitch.",
@@ -274,7 +274,7 @@ function Invoke-DeveloperSession {
     $toolUa    = $UA_DEV_TOOL    | Get-Random
     Write-TrafficLog "--- session start (browser: $($browserUa.Split('/')[0]), tool: $($toolUa.Split('/')[0]))"
 
-    # Package registries — tool UA simulates actual package manager traffic
+    # Package registries  -  tool UA simulates actual package manager traffic
     $registries = @(
         "https://registry.npmjs.org",
         "https://pypi.org/simple/",
@@ -287,7 +287,7 @@ function Invoke-DeveloperSession {
         Start-RandomDelay -Min 3 -Max 10
     }
 
-    # Code, docs, community — browser UA
+    # Code, docs, community  -  browser UA
     $devSites = @(
         "https://github.com",
         "https://gitlab.com",
@@ -340,7 +340,7 @@ function Invoke-DeveloperSession {
 # Profile: executive
 #   Light O365, business news, GenAI for briefings
 #   UA: Mac Safari pool
-#   Note: the 10:30 PM scheduled task run generates the UEBA signal — the
+#   Note: the 10:30 PM scheduled task run generates the UEBA signal  -  the
 #   profile itself doesn't need special after-hours logic; timing is in the task
 # ---------------------------------------------------------------------------
 
@@ -375,7 +375,7 @@ function Invoke-ExecutiveSession {
         Start-RandomDelay -Min 10 -Max 30
     }
 
-    # GenAI — executives use it for summaries and comms
+    # GenAI  -  executives use it for summaries and comms
     $genai = @("https://chatgpt.com", "https://claude.ai", "https://gemini.google.com")
     Invoke-Traffic -Uri ($genai | Get-Random) -UserAgent $ua
     Start-RandomDelay -Min 5 -Max 15
@@ -392,13 +392,13 @@ function Invoke-ExecutiveSession {
 
 # ---------------------------------------------------------------------------
 # Profile: threat
-#   Security test events — maps to the LXC security-tests/ scripts
+#   Security test events  -  maps to the LXC security-tests/ scripts
 #   Runs each test type once per session; scheduled 3x/day
 #
 #   AV:     EICAR test file download
 #   DLP:    POST fake SSN+CCN to public HTTPS endpoint
 #   DLP:    POST PII-in-prompt to real AI APIs (OpenAI, Anthropic)
-#           No valid key used — server returns 401, but Zscaler inspects the
+#           No valid key used  -  server returns 401, but Zscaler inspects the
 #           outbound request body before the response arrives, triggering DLP
 #   Policy: HTTP access to blocked personal cloud storage sites
 # ---------------------------------------------------------------------------
@@ -441,7 +441,7 @@ function Invoke-ThreatSession {
         "Analyze this patient: Jane Doe, DOB 07/22/1978, MRN 456789, diagnosis hypertension, insurance ID HMO-987654."
     ) | Get-Random
 
-    # --- DLP: GenAI prompt with PII — OpenAI ---
+    # --- DLP: GenAI prompt with PII  -  OpenAI ---
     Write-TrafficLog "dlp-genai-prompt: POST PII to OpenAI API"
     $openaiPayload = @{
         model    = "gpt-4"
@@ -452,7 +452,7 @@ function Invoke-ThreatSession {
         -Headers @{ Authorization = "Bearer sk-dlp-test-no-valid-key-zscaler-inspection-target" }
     Start-RandomDelay -Min 3 -Max 8
 
-    # --- DLP: GenAI prompt with PII — Anthropic ---
+    # --- DLP: GenAI prompt with PII  -  Anthropic ---
     Write-TrafficLog "dlp-genai-prompt: POST PII to Anthropic API"
     $anthropicPayload = @{
         model      = "claude-3-5-sonnet-20241022"
@@ -467,7 +467,7 @@ function Invoke-ThreatSession {
         }
     Start-RandomDelay -Min 3 -Max 8
 
-    # --- DLP: GenAI prompt with PII — Google Gemini ---
+    # --- DLP: GenAI prompt with PII  -  Google Gemini ---
     Write-TrafficLog "dlp-genai-prompt: POST PII to Google Gemini API"
     $geminiPayload = @{
         contents = @(@{
@@ -479,7 +479,7 @@ function Invoke-ThreatSession {
 }
 
 # ---------------------------------------------------------------------------
-# Main loop — runs sessions until DurationMinutes expires
+# Main loop  -  runs sessions until DurationMinutes expires
 # ---------------------------------------------------------------------------
 
 Write-TrafficLog "=== started | duration=${DurationMinutes}m | end=$($END_TIME.ToString('HH:mm:ss')) ==="
