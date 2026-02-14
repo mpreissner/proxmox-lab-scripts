@@ -13,7 +13,7 @@ YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 CYAN='\033[0;36m'
 NC='\033[0m'
-VERSION="2.2.1"
+VERSION="2.3.0"
 
 CONFIG_FILE="${HOME}/.proxmox-lab.conf"
 if [ -f "$CONFIG_FILE" ]; then
@@ -80,10 +80,10 @@ save_config() {
 NODES="${NODES:-}"
 BRIDGE="${BRIDGE:-vmbr0}"
 STORAGE="${STORAGE:-local-lvm}"
-VLAN_HQ="${VLAN_HQ:-200}"
-VLAN_BRANCH="${VLAN_BRANCH:-201}"
-HQ_START="${HQ_START:-200}"
-BRANCH_START="${BRANCH_START:-220}"
+VLAN_HQ="${VLAN_HQ:-}"
+VLAN_BRANCH="${VLAN_BRANCH:-}"
+HQ_RANGE="${HQ_RANGE:-}"
+BRANCH_RANGE="${BRANCH_RANGE:-}"
 TEMPLATE_ID="${TEMPLATE_ID:-}"
 MEMORY="${MEMORY:-256}"
 CORES="${CORES:-1}"
@@ -283,6 +283,52 @@ _next_free_ctid() {
     fi
     echo "$candidate"
     return
+  done
+}
+
+# Find the next free CTID within [range_start, range_end].
+# Returns 1 (prints nothing) if the range is exhausted.
+_next_free_ctid_in_range() {
+  local range_start="$1" range_end="$2" claimed="${3:-}"
+  local candidate=$range_start
+  while [ $candidate -le $range_end ]; do
+    if [ -z "${_CT_NODE[$candidate]+x}" ] && [[ " $claimed " != *" $candidate "* ]]; then
+      echo "$candidate"
+      return 0
+    fi
+    candidate=$((candidate + 1))
+  done
+  return 1
+}
+
+# Prompt for a CTID range (format: START-END) with format and capacity validation.
+# Args: <display_label> <min_containers> <var_name>
+read_ctid_range() {
+  local label="$1" min_count="$2" var_name="$3"
+  local current="${!var_name}"
+  while true; do
+    if [ -n "$current" ]; then
+      read -p "  ${label} [${current}]: " input
+      input="${input:-$current}"
+    else
+      read -p "  ${label} (e.g., 100-110): " input
+    fi
+    if [[ "$input" =~ ^([0-9]+)-([0-9]+)$ ]]; then
+      local rstart="${BASH_REMATCH[1]}" rend="${BASH_REMATCH[2]}"
+      if [ "$rstart" -ge "$rend" ]; then
+        echo -e "${RED}  Start must be less than end.${NC}"
+        continue
+      fi
+      local capacity=$(( rend - rstart + 1 ))
+      if [ "$capacity" -lt "$min_count" ]; then
+        echo -e "${RED}  Range ${input} holds ${capacity} CTIDs; need at least ${min_count}.${NC}"
+        continue
+      fi
+      printf -v "$var_name" '%s' "$input"
+      break
+    else
+      echo -e "${RED}  Invalid format. Use START-END (e.g., 100-110).${NC}"
+    fi
   done
 }
 
@@ -699,10 +745,10 @@ cmd_deploy_containers() {
   if $DEPLOY_HQ; then
     echo ""
     echo -e "${BLUE}7. Data Center Configuration${NC}"
-    read_with_default "Starting CTID for Data Center" "${HQ_START:-200}" "HQ_START"
-    read_with_default "Data Center VLAN tag" "${VLAN_HQ:-200}" "VLAN_HQ"
+    read_ctid_range "Data Center CTID range" 6 "HQ_RANGE"
+    read_with_default "Data Center VLAN tag" "${VLAN_HQ:-}" "VLAN_HQ"
 
-    echo -e "${CYAN}Data Center containers (CTIDs assigned from ${HQ_START}, skipping any in use):${NC}"
+    echo -e "${CYAN}Data Center containers (assigned within ${HQ_RANGE}, skipping any in use):${NC}"
     echo "  hq-fileserver (256 MB)"
     echo "  hq-webapp (256 MB)"
     echo "  hq-email (256 MB)"
@@ -715,10 +761,10 @@ cmd_deploy_containers() {
   if $DEPLOY_BRANCH; then
     echo ""
     echo -e "${BLUE}8. Branch UserNet Configuration${NC}"
-    read_with_default "Starting CTID for Branch" "${BRANCH_START:-220}" "BRANCH_START"
-    read_with_default "Branch VLAN tag" "${VLAN_BRANCH:-201}" "VLAN_BRANCH"
+    read_ctid_range "Branch CTID range" 5 "BRANCH_RANGE"
+    read_with_default "Branch VLAN tag" "${VLAN_BRANCH:-}" "VLAN_BRANCH"
 
-    echo -e "${CYAN}Branch containers (CTIDs assigned from ${BRANCH_START}, skipping any in use):${NC}"
+    echo -e "${CYAN}Branch containers (assigned within ${BRANCH_RANGE}, skipping any in use):${NC}"
     echo "  branch-worker1 (256 MB)"
     echo "  branch-worker2 (256 MB)"
     echo "  branch-sales (256 MB)"
@@ -747,15 +793,22 @@ cmd_deploy_containers() {
   echo "Scanning for existing containers..."
   _load_ct_data
 
+  # Parse configured ranges
+  IFS='-' read -r _hq_start _hq_end <<< "${HQ_RANGE:-}"
+  IFS='-' read -r _br_start _br_end <<< "${BRANCH_RANGE:-}"
+
   # Build full container list with CTID, hostname, profile, VLAN, memory.
-  # CTIDs are assigned sequentially from the configured start, skipping any
-  # that already exist on the cluster, guaranteeing a full stack deployment.
+  # CTIDs are assigned in order within the configured range, skipping any
+  # already in use. Errors out if the range cannot fit the full stack.
   # Format: CTID hostname vlan mem group offset
   declare -a DEPLOY_LIST=()
   _claimed_ctids=""
   if $DEPLOY_HQ; then
     for OFFSET in 0 1 2 3 4 5; do
-      CTID=$(_next_free_ctid "$HQ_START" "$_claimed_ctids")
+      CTID=$(_next_free_ctid_in_range "$_hq_start" "$_hq_end" "$_claimed_ctids") || {
+        echo -e "${RED}Error: Range ${HQ_RANGE} has no room for all 6 Data Center containers.${NC}"
+        return 1
+      }
       _claimed_ctids="$_claimed_ctids $CTID"
       HOSTNAME="${HQ_CONTAINERS[$OFFSET]}"
       if [[ "$HOSTNAME" =~ (monitoring|devops) ]]; then MEM=512; else MEM=256; fi
@@ -764,7 +817,10 @@ cmd_deploy_containers() {
   fi
   if $DEPLOY_BRANCH; then
     for OFFSET in 0 1 2 3 4; do
-      CTID=$(_next_free_ctid "$BRANCH_START" "$_claimed_ctids")
+      CTID=$(_next_free_ctid_in_range "$_br_start" "$_br_end" "$_claimed_ctids") || {
+        echo -e "${RED}Error: Range ${BRANCH_RANGE} has no room for all 5 Branch containers.${NC}"
+        return 1
+      }
       _claimed_ctids="$_claimed_ctids $CTID"
       HOSTNAME="${BRANCH_CONTAINERS[$OFFSET]}"
       if [[ "$HOSTNAME" == "branch-dev" ]]; then MEM=512; else MEM=256; fi
@@ -907,6 +963,7 @@ cmd_deploy_containers() {
     echo ""
     echo -e "${CYAN}Data Center:${NC}"
     echo "  VLAN Tag:    ${VLAN_HQ}"
+    echo "  Range:       ${HQ_RANGE}"
     echo "  CTIDs:       ${_hq_ctids# }"
     echo "  Containers:  6"
   fi
@@ -920,6 +977,7 @@ cmd_deploy_containers() {
     echo ""
     echo -e "${CYAN}Branch UserNet:${NC}"
     echo "  VLAN Tag:    ${VLAN_BRANCH}"
+    echo "  Range:       ${BRANCH_RANGE}"
     echo "  CTIDs:       ${_br_ctids# }"
     echo "  Containers:  5"
   fi
@@ -1097,14 +1155,14 @@ cmd_start_containers() {
       ;;
 
     2)
-      if [ -z "${HQ_START:-}" ]; then
-        read_with_default "Data Center starting CTID" "200" "HQ_START"
+      if [ -z "${HQ_RANGE:-}" ]; then
+        read_ctid_range "Data Center CTID range" 6 "HQ_RANGE"
       else
-        echo "  Using Data Center start: ${HQ_START}"
+        echo "  Using Data Center range: ${HQ_RANGE}"
       fi
-      HQ_END=$((HQ_START + 5))
-      echo "Checking Data Center containers (${HQ_START}-${HQ_END})..."
-      for ctid in $(seq $HQ_START $HQ_END); do
+      IFS='-' read -r _hq_start _hq_end <<< "$HQ_RANGE"
+      echo "Checking Data Center containers (${HQ_RANGE})..."
+      for ctid in $(seq $_hq_start $_hq_end); do
         status=$(_cluster_ct_status $ctid)
         if [ "$status" = "stopped" ]; then
           TARGET_CONTAINERS+=($ctid)
@@ -1118,14 +1176,14 @@ cmd_start_containers() {
       ;;
 
     3)
-      if [ -z "${BRANCH_START:-}" ]; then
-        read_with_default "Branch starting CTID" "220" "BRANCH_START"
+      if [ -z "${BRANCH_RANGE:-}" ]; then
+        read_ctid_range "Branch CTID range" 5 "BRANCH_RANGE"
       else
-        echo "  Using Branch start: ${BRANCH_START}"
+        echo "  Using Branch range: ${BRANCH_RANGE}"
       fi
-      BRANCH_END=$((BRANCH_START + 4))
-      echo "Checking Branch containers (${BRANCH_START}-${BRANCH_END})..."
-      for ctid in $(seq $BRANCH_START $BRANCH_END); do
+      IFS='-' read -r _br_start _br_end <<< "$BRANCH_RANGE"
+      echo "Checking Branch containers (${BRANCH_RANGE})..."
+      for ctid in $(seq $_br_start $_br_end); do
         status=$(_cluster_ct_status $ctid)
         if [ "$status" = "stopped" ]; then
           TARGET_CONTAINERS+=($ctid)
@@ -1386,14 +1444,14 @@ cmd_stop_containers() {
       ;;
 
     2)
-      if [ -z "${HQ_START:-}" ]; then
-        read_with_default "Data Center starting CTID" "200" "HQ_START"
+      if [ -z "${HQ_RANGE:-}" ]; then
+        read_ctid_range "Data Center CTID range" 6 "HQ_RANGE"
       else
-        echo "  Using Data Center start: ${HQ_START}"
+        echo "  Using Data Center range: ${HQ_RANGE}"
       fi
-      HQ_END=$((HQ_START + 5))
-      echo "Checking Data Center containers (${HQ_START}-${HQ_END})..."
-      for ctid in $(seq $HQ_START $HQ_END); do
+      IFS='-' read -r _hq_start _hq_end <<< "$HQ_RANGE"
+      echo "Checking Data Center containers (${HQ_RANGE})..."
+      for ctid in $(seq $_hq_start $_hq_end); do
         status=$(_cluster_ct_running $ctid)
         if [ "$status" = "running" ]; then
           TARGET_CONTAINERS+=($ctid)
@@ -1405,14 +1463,14 @@ cmd_stop_containers() {
       ;;
 
     3)
-      if [ -z "${BRANCH_START:-}" ]; then
-        read_with_default "Branch starting CTID" "220" "BRANCH_START"
+      if [ -z "${BRANCH_RANGE:-}" ]; then
+        read_ctid_range "Branch CTID range" 5 "BRANCH_RANGE"
       else
-        echo "  Using Branch start: ${BRANCH_START}"
+        echo "  Using Branch range: ${BRANCH_RANGE}"
       fi
-      BRANCH_END=$((BRANCH_START + 4))
-      echo "Checking Branch containers (${BRANCH_START}-${BRANCH_END})..."
-      for ctid in $(seq $BRANCH_START $BRANCH_END); do
+      IFS='-' read -r _br_start _br_end <<< "$BRANCH_RANGE"
+      echo "Checking Branch containers (${BRANCH_RANGE})..."
+      for ctid in $(seq $_br_start $_br_end); do
         status=$(_cluster_ct_running $ctid)
         if [ "$status" = "running" ]; then
           TARGET_CONTAINERS+=($ctid)
@@ -1537,19 +1595,48 @@ declare -A PROFILE_DESC=(
   ["executive"]="Office 365, WSJ, Bloomberg, Zoom, GenAI tools"
 )
 
-declare -A DEFAULT_PROFILES=(
-  [200]="fileserver"
-  [201]="webapp"
-  [202]="email"
-  [203]="monitoring"
-  [204]="devops"
-  [205]="database"
-  [220]="office-worker"
-  [221]="office-worker"
-  [222]="sales"
-  [223]="developer"
-  [224]="executive"
-)
+# DEFAULT_PROFILES is built dynamically from HQ_RANGE/BRANCH_RANGE after
+# _load_ct_data runs. Lab-managed containers within each range are sorted by
+# CTID and mapped positionally to the profile order, so the profile is always
+# the source of truth regardless of which specific CTIDs were assigned.
+declare -A DEFAULT_PROFILES=()
+_build_default_profiles() {
+  local hq_profiles=(fileserver webapp email monitoring devops database)
+  # Branch: minimum two office-worker workloads, followed by remaining profiles
+  local br_ow_min=2
+  local br_other_profiles=(sales developer executive)
+  local idx ctid profile
+
+  if [ -n "${HQ_RANGE:-}" ]; then
+    IFS='-' read -r _hq_s _hq_e <<< "$HQ_RANGE"
+    idx=0
+    for ctid in $(seq $_hq_s $_hq_e); do
+      [ $idx -ge ${#hq_profiles[@]} ] && break
+      if [ -n "${_CT_NODE[$ctid]+x}" ] && [[ "${_CT_TAGS[$ctid]:-}" == *"lab-managed"* ]]; then
+        DEFAULT_PROFILES[$ctid]="${hq_profiles[$idx]}"
+        ((++idx))
+      fi
+    done
+  fi
+
+  if [ -n "${BRANCH_RANGE:-}" ]; then
+    IFS='-' read -r _br_s _br_e <<< "$BRANCH_RANGE"
+    local total_branch=$(( br_ow_min + ${#br_other_profiles[@]} ))
+    idx=0
+    for ctid in $(seq $_br_s $_br_e); do
+      [ $idx -ge $total_branch ] && break
+      if [ -n "${_CT_NODE[$ctid]+x}" ] && [[ "${_CT_TAGS[$ctid]:-}" == *"lab-managed"* ]]; then
+        if [ $idx -lt $br_ow_min ]; then
+          profile="office-worker"
+        else
+          profile="${br_other_profiles[$((idx - br_ow_min))]}"
+        fi
+        DEFAULT_PROFILES[$ctid]="$profile"
+        ((++idx))
+      fi
+    done
+  fi
+}
 
 _default_security_tests_for_profile() {
   local profile="$1"
@@ -2325,6 +2412,7 @@ cmd_install_traffic_gen() {
   echo "Detecting running containers (cluster-wide)..."
 
   _load_ct_data
+  _build_default_profiles
 
   RUNNING_CONTAINERS=$(for ctid in "${!_CT_NODE[@]}"; do
     [ "${_CT_STATUS[$ctid]:-}" = "running" ] && echo "$ctid"
@@ -2362,53 +2450,50 @@ cmd_install_traffic_gen() {
       done
 
       if [ ${#TARGET_PROFILES[@]} -eq 0 ]; then
-        echo -e "${YELLOW}No containers match default CTID ranges (200-205, 220-224)${NC}"
-        echo "Please use custom selection option"
+        echo -e "${YELLOW}No lab-managed containers found in the configured ranges.${NC}"
+        echo "Ensure HQ_RANGE/BRANCH_RANGE are set and containers are deployed and running."
+        echo "Use the custom selection option to assign profiles manually."
         return 1
       fi
       ;;
 
     2)
-      if [ -z "${HQ_START:-}" ]; then
-        read_with_default "Data Center starting CTID" "200" "HQ_START"
+      if [ -z "${HQ_RANGE:-}" ]; then
+        read_ctid_range "Data Center CTID range" 6 "HQ_RANGE"
+        _build_default_profiles
       else
-        echo "  Using Data Center start: ${HQ_START}"
+        echo "  Using Data Center range: ${HQ_RANGE}"
       fi
-      HQ_END=$((HQ_START + 5))
-
-      echo "Data Center containers (${HQ_START}-${HQ_END}):"
-      offset=0
-      for profile in fileserver webapp email monitoring devops database; do
-        ctid=$((HQ_START + offset))
+      echo "Data Center containers (${HQ_RANGE}):"
+      for ctid in "${!DEFAULT_PROFILES[@]}"; do
+        IFS='-' read -r _hq_s _hq_e <<< "$HQ_RANGE"
+        [ "$ctid" -lt "$_hq_s" ] || [ "$ctid" -gt "$_hq_e" ] && continue
         if echo "$RUNNING_CONTAINERS" | grep -q "^${ctid}$"; then
-          TARGET_PROFILES[$ctid]="$profile"
-          echo "  CT ${ctid}: ${profile}"
+          TARGET_PROFILES[$ctid]="${DEFAULT_PROFILES[$ctid]}"
+          echo "  CT ${ctid}: ${DEFAULT_PROFILES[$ctid]}"
         else
           echo -e "  ${YELLOW}CT ${ctid}: not running (skipped)${NC}"
         fi
-        ((++offset))
       done
       ;;
 
     3)
-      if [ -z "${BRANCH_START:-}" ]; then
-        read_with_default "Branch starting CTID" "220" "BRANCH_START"
+      if [ -z "${BRANCH_RANGE:-}" ]; then
+        read_ctid_range "Branch CTID range" 5 "BRANCH_RANGE"
+        _build_default_profiles
       else
-        echo "  Using Branch start: ${BRANCH_START}"
+        echo "  Using Branch range: ${BRANCH_RANGE}"
       fi
-      BRANCH_END=$((BRANCH_START + 4))
-
-      echo "Branch containers (${BRANCH_START}-${BRANCH_END}):"
-      offset=0
-      for profile in office-worker office-worker sales developer executive; do
-        ctid=$((BRANCH_START + offset))
+      echo "Branch containers (${BRANCH_RANGE}):"
+      for ctid in "${!DEFAULT_PROFILES[@]}"; do
+        IFS='-' read -r _br_s _br_e <<< "$BRANCH_RANGE"
+        [ "$ctid" -lt "$_br_s" ] || [ "$ctid" -gt "$_br_e" ] && continue
         if echo "$RUNNING_CONTAINERS" | grep -q "^${ctid}$"; then
-          TARGET_PROFILES[$ctid]="$profile"
-          echo "  CT ${ctid}: ${profile}"
+          TARGET_PROFILES[$ctid]="${DEFAULT_PROFILES[$ctid]}"
+          echo "  CT ${ctid}: ${DEFAULT_PROFILES[$ctid]}"
         else
           echo -e "  ${YELLOW}CT ${ctid}: not running (skipped)${NC}"
         fi
-        ((++offset))
       done
       ;;
 

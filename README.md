@@ -180,10 +180,12 @@ pct exec 200 -- bash /opt/traffic-gen/security-tests/dlp-network.sh
 
 ### Network Layout
 
-| Network | VLAN | CTID Range | Container Count |
-|---------|------|------------|-----------------|
-| Data Center | 200 | 200-205 | 6 servers |
-| BranchNet | 201 | 220-224 | 5 users |
+CTID ranges and VLAN IDs have no built-in defaults — they are entered at deploy time and saved to `~/.proxmox-lab.conf` for subsequent runs.
+
+| Network | Containers |
+|---------|------------|
+| Data Center | 6 servers (fileserver, webapp, email, monitoring, devops, database) |
+| BranchNet | 5 users (2× office-worker, sales, developer, executive) |
 
 ### Resource Allocation
 
@@ -270,7 +272,7 @@ Security tests are installed separately from normal traffic profiles and run on 
 ### Custom CTID Ranges
 ```bash
 ./proxmox-lab.sh deploy
-# Select Data Center only, enter 300 as starting CTID
+# Select Data Center only, enter 300-310 as CTID range
 ```
 
 ### Custom Traffic Intensity
