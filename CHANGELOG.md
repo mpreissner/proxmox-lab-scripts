@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.5.0] - 2026-02-14
+
+### Added
+- `cmd_update_containers()` (menu option 9 / `update-containers` CLI): updates packages on all running lab-managed containers in parallel via `apk update && apk upgrade`. Reports per-container success/failure; shows error output for any that fail.
+
+### Changed
+- Main menu reordered: wizard moved to option 5 (immediately after the four setup steps); Windows cert (6) and Windows traffic gen (7) grouped together; Show Status (8), Update Container Packages (9), Update Lab Script (10), Stop Containers (11), Exit (12).
+
+---
+
 ## [2.4.0] - 2026-02-14
 
 ### Added
