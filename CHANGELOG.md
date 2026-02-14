@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.6.5] - 2026-02-14
+
+### Fixed
+- `cmd_update_containers` printed "Operation failed or was aborted." even when all containers updated successfully. The final line `[ $FAILED -gt 0 ] && echo ...` left exit code 1 (from the false `[` test) as the function's return value when no failures occurred. Replaced with an `if` block that only returns 1 when there are actual failures.
+
+---
+
 ## [2.6.4] - 2026-02-14
 
 ### Fixed

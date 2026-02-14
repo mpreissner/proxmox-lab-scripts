@@ -13,7 +13,7 @@ YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 CYAN='\033[0;36m'
 NC='\033[0m'
-VERSION="2.6.4"
+VERSION="2.6.5"
 
 CONFIG_FILE="${HOME}/.proxmox-lab.conf"
 if [ -f "$CONFIG_FILE" ]; then
@@ -3129,7 +3129,10 @@ cmd_update_containers() {
 
   echo ""
   echo -e "${GREEN}Updated: ${SUCCESS}${NC}"
-  [ $FAILED -gt 0 ] && echo -e "${RED}Failed: ${FAILED}${NC}"
+  if [ $FAILED -gt 0 ]; then
+    echo -e "${RED}Failed: ${FAILED}${NC}"
+    return 1
+  fi
 }
 
 # ============================================================
