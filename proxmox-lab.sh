@@ -13,7 +13,7 @@ YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 CYAN='\033[0;36m'
 NC='\033[0m'
-VERSION="2.6.2"
+VERSION="2.6.3"
 
 CONFIG_FILE="${HOME}/.proxmox-lab.conf"
 if [ -f "$CONFIG_FILE" ]; then
@@ -2964,7 +2964,9 @@ cmd_show_status() {
   STOPPED=0
   local current_node=""
 
-  while IFS=$'\t' read -r node ctid; do
+  # Read from fd 3 (not stdin) so SSH calls inside the loop via run_on_node
+  # cannot consume the here-string by reading from stdin.
+  while IFS=$'\t' read -r node ctid <&3; do
     local name="${_CT_HOSTNAME[$ctid]:-}"
     local status="${_CT_STATUS[$ctid]:-stopped}"
     local tags="${_CT_TAGS[$ctid]:-}"
@@ -2996,7 +2998,7 @@ cmd_show_status() {
       STOPPED=$((STOPPED + 1))
     fi
     echo -e "$TRAFFIC"
-  done <<< "$sorted_pairs"
+  done 3<<< "$sorted_pairs"
 
   echo ""
   echo -e "Total: ${GREEN}${RUNNING} running${NC}, ${YELLOW}${STOPPED} stopped${NC}"
