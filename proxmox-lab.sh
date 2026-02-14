@@ -13,7 +13,7 @@ YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 CYAN='\033[0;36m'
 NC='\033[0m'
-VERSION="2.4.0"
+VERSION="2.5.0"
 
 CONFIG_FILE="${HOME}/.proxmox-lab.conf"
 if [ -f "$CONFIG_FILE" ]; then
@@ -2943,6 +2943,88 @@ cmd_full_wizard() {
 }
 
 # ============================================================
+# MODULE: Container Maintenance
+# ============================================================
+
+cmd_update_containers() {
+  _load_config
+  section_header "Update Container Packages"
+
+  echo "Scanning for containers (cluster-wide)..."
+  _load_ct_data
+
+  declare -a RUNNING_CTIDS=()
+  declare -A CT_NODE_MAP=() CT_HOSTNAME_MAP=()
+
+  for ctid in $(echo "${!_CT_NODE[@]}" | tr ' ' '\n' | sort -n); do
+    tags="${_CT_TAGS[$ctid]:-}"
+    name="${_CT_HOSTNAME[$ctid]:-}"
+    if [[ "$tags" != *"lab-managed"* ]] && \
+       [[ "$name" != hq-* ]] && [[ "$name" != branch-* ]]; then
+      continue
+    fi
+    if [ "${_CT_STATUS[$ctid]:-stopped}" = "running" ]; then
+      RUNNING_CTIDS+=("$ctid")
+      CT_NODE_MAP[$ctid]="${_CT_NODE[$ctid]}"
+      CT_HOSTNAME_MAP[$ctid]="${_CT_HOSTNAME[$ctid]:-unknown}"
+    fi
+  done
+
+  if [ ${#RUNNING_CTIDS[@]} -eq 0 ]; then
+    echo -e "${YELLOW}No running lab-managed containers found.${NC}"
+    return 0
+  fi
+
+  echo ""
+  echo "Found ${#RUNNING_CTIDS[@]} running container(s):"
+  for ctid in "${RUNNING_CTIDS[@]}"; do
+    printf "  %-8s %-24s %s\n" "$ctid" "${CT_HOSTNAME_MAP[$ctid]}" "${CT_NODE_MAP[$ctid]}"
+  done
+  echo ""
+  read -p "Update packages on all containers? [y/N]: " confirm
+  if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
+    echo "Aborted."
+    return 0
+  fi
+
+  echo ""
+  echo "Updating packages (parallel)..."
+  echo ""
+
+  declare -a PIDS=() CTID_ORDER=()
+  declare -A TMPFILES=()
+
+  for ctid in "${RUNNING_CTIDS[@]}"; do
+    local_tmpf=$(mktemp)
+    CTID_ORDER+=("$ctid")
+    TMPFILES[$ctid]="$local_tmpf"
+    run_on_node "${CT_NODE_MAP[$ctid]}" pct exec "$ctid" -- \
+      sh -c 'apk update -q 2>&1 && apk upgrade -y 2>&1' > "$local_tmpf" 2>&1 &
+    PIDS+=($!)
+  done
+
+  SUCCESS=0; FAILED=0
+  for i in "${!PIDS[@]}"; do
+    ctid="${CTID_ORDER[$i]}"
+    name="${CT_HOSTNAME_MAP[$ctid]}"
+    tmpf="${TMPFILES[$ctid]}"
+    if wait "${PIDS[$i]}" 2>/dev/null; then
+      echo -e "${GREEN}✓ CT ${ctid} (${name})${NC}"
+      ((++SUCCESS))
+    else
+      echo -e "${RED}✗ CT ${ctid} (${name})${NC}"
+      sed 's/^/    /' "$tmpf"
+      ((++FAILED))
+    fi
+    rm -f "$tmpf"
+  done
+
+  echo ""
+  echo -e "${GREEN}Updated: ${SUCCESS}${NC}"
+  [ $FAILED -gt 0 ] && echo -e "${RED}Failed: ${FAILED}${NC}"
+}
+
+# ============================================================
 # MODULE: Update
 # ============================================================
 
@@ -3481,33 +3563,35 @@ main_menu() {
     echo "  2) Deploy Containers"
     echo "  3) Start Containers"
     echo "  4) Install Traffic Generator"
-    echo "  5) Stop Containers"
-    echo "  6) Show Status"
-    echo "  7) Full Setup Wizard  (steps 1 → 2 → 3 → 4)"
-    echo "  8) Update"
-    echo "  9) Install Windows VM Certificate"
-    echo " 10) Setup Windows VM Traffic Generator"
-    echo " 11) Exit"
+    echo "  5) Full Setup Wizard  (steps 1 → 2 → 3 → 4)"
+    echo "  6) Install Windows VM Certificate"
+    echo "  7) Setup Windows VM Traffic Generator"
+    echo "  8) Show Status"
+    echo "  9) Update Container Packages"
+    echo " 10) Update Lab Script"
+    echo " 11) Stop Containers"
+    echo " 12) Exit"
     echo ""
-    read -p "Select option [1-11]: " choice
+    read -p "Select option [1-12]: " choice
 
     case "$choice" in
       1) ( cmd_create_template ) || echo -e "${RED}Operation failed or was aborted.${NC}" ;;
       2) ( cmd_deploy_containers ) || echo -e "${RED}Operation failed or was aborted.${NC}" ;;
       3) ( cmd_start_containers ) || echo -e "${RED}Operation failed or was aborted.${NC}" ;;
       4) ( cmd_install_traffic_gen ) || echo -e "${RED}Operation failed or was aborted.${NC}" ;;
-      5) ( cmd_stop_containers ) || echo -e "${RED}Operation failed or was aborted.${NC}" ;;
-      6) ( cmd_show_status ) || echo -e "${RED}Operation failed or was aborted.${NC}" ;;
-      7) ( cmd_full_wizard ) || echo -e "${RED}Wizard failed or was aborted.${NC}" ;;
-      8) ( cmd_update ) || echo -e "${RED}Operation failed or was aborted.${NC}" ;;
-      9) ( cmd_install_windows_cert ) || echo -e "${RED}Operation failed or was aborted.${NC}" ;;
-      10) ( cmd_setup_windows_vm ) || echo -e "${RED}Operation failed or was aborted.${NC}" ;;
-      11|q|Q)
+      5) ( cmd_full_wizard ) || echo -e "${RED}Wizard failed or was aborted.${NC}" ;;
+      6) ( cmd_install_windows_cert ) || echo -e "${RED}Operation failed or was aborted.${NC}" ;;
+      7) ( cmd_setup_windows_vm ) || echo -e "${RED}Operation failed or was aborted.${NC}" ;;
+      8) ( cmd_show_status ) || echo -e "${RED}Operation failed or was aborted.${NC}" ;;
+      9) ( cmd_update_containers ) || echo -e "${RED}Operation failed or was aborted.${NC}" ;;
+      10) ( cmd_update ) || echo -e "${RED}Operation failed or was aborted.${NC}" ;;
+      11) ( cmd_stop_containers ) || echo -e "${RED}Operation failed or was aborted.${NC}" ;;
+      12|q|Q)
         echo "Goodbye!"
         exit 0
         ;;
       *)
-        echo -e "${RED}Invalid option. Please select 1-11.${NC}"
+        echo -e "${RED}Invalid option. Please select 1-12.${NC}"
         ;;
     esac
   done
@@ -3527,29 +3611,31 @@ case "${1:-}" in
   install-traffic)  cmd_install_traffic_gen ;;
   status)           cmd_show_status ;;
   wizard)           cmd_full_wizard ;;
-  update)           cmd_update ;;
-  windows-cert)     cmd_install_windows_cert ;;
-  windows-setup)    cmd_setup_windows_vm ;;
-  _cleanup)         cmd_system_cleanup ;;
-  --version|-v)     echo "proxmox-lab.sh v${VERSION}" ;;
-  "")               _startup_version_check; main_menu ;;
+  update)              cmd_update ;;
+  update-containers)   cmd_update_containers ;;
+  windows-cert)        cmd_install_windows_cert ;;
+  windows-setup)       cmd_setup_windows_vm ;;
+  _cleanup)            cmd_system_cleanup ;;
+  --version|-v)        echo "proxmox-lab.sh v${VERSION}" ;;
+  "")                  _startup_version_check; main_menu ;;
   *)
     echo -e "${RED}Unknown command: $1${NC}"
     echo ""
     echo "Usage: $0 [command]"
     echo ""
     echo "Commands:"
-    echo "  create-template    Create Alpine LXC template"
-    echo "  deploy             Deploy lab containers"
-    echo "  start              Start containers"
-    echo "  stop               Stop all running containers"
-    echo "  install-traffic    Install traffic generators"
-    echo "  status             Show container status"
-    echo "  wizard             Full setup wizard"
-    echo "  update             Check for updates and self-patch"
-    echo "  windows-cert       Install TLS cert on a Windows VM"
-    echo "  windows-setup      Push traffic scripts to a Windows VM and configure scheduled tasks"
-    echo "  --version          Show version"
+    echo "  create-template      Create Alpine LXC template"
+    echo "  deploy               Deploy lab containers"
+    echo "  start                Start containers"
+    echo "  stop                 Stop all running containers"
+    echo "  install-traffic      Install traffic generators"
+    echo "  status               Show container status"
+    echo "  wizard               Full setup wizard"
+    echo "  update-containers    Update packages on all running lab containers"
+    echo "  update               Check for updates and self-patch"
+    echo "  windows-cert         Install TLS cert on a Windows VM"
+    echo "  windows-setup        Push traffic scripts to a Windows VM and configure scheduled tasks"
+    echo "  --version            Show version"
     echo ""
     echo "Run without arguments for the interactive menu."
     exit 1

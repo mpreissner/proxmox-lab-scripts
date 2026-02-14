@@ -36,13 +36,14 @@ A single interactive menu covering the full lab lifecycle.
 2. **Deploy Containers** — clone and configure lab containers
 3. **Start Containers** — start stopped lab-managed containers
 4. **Install Traffic Generator** — push traffic profiles to containers
-5. **Stop Containers** — stop all running lab-managed containers
-6. **Show Status** — view all containers with running state and traffic gen status at a glance
-7. **Full Setup Wizard** — runs steps 1 → 2 → 3 → 4 in sequence
-8. **Update** — check GitHub for a newer version, show changelog, and self-patch the script in place (also runs automatically on every interactive launch)
-9. **Install Windows VM Certificate** — install a TLS inspection root CA on a Windows VM via QEMU guest agent
-10. **Setup Windows VM Traffic Generator** — push `win-traffic.ps1` and `setup-scheduled-tasks.ps1` to a Windows VM and register scheduled tasks
-11. **Exit**
+5. **Full Setup Wizard** — runs steps 1 → 2 → 3 → 4 in sequence
+6. **Install Windows VM Certificate** — install a TLS inspection root CA on a Windows VM via QEMU guest agent
+7. **Setup Windows VM Traffic Generator** — push `win-traffic.ps1` and `setup-scheduled-tasks.ps1` to a Windows VM and register scheduled tasks
+8. **Show Status** — view all containers with running state and traffic gen status at a glance
+9. **Update Container Packages** — run `apk update && apk upgrade` on all running lab containers in parallel
+10. **Update Lab Script** — check GitHub for a newer version, show changelog, and self-patch the script in place (also runs automatically on every interactive launch)
+11. **Stop Containers** — stop all running lab-managed containers
+12. **Exit**
 
 **Interactive menu:**
 ```bash
@@ -58,6 +59,7 @@ A single interactive menu covering the full lab lifecycle.
 ./proxmox-lab.sh install-traffic
 ./proxmox-lab.sh status
 ./proxmox-lab.sh wizard
+./proxmox-lab.sh update-containers
 ./proxmox-lab.sh update
 ./proxmox-lab.sh windows-cert
 ./proxmox-lab.sh windows-setup
