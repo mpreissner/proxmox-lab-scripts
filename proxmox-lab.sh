@@ -13,7 +13,7 @@ YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 CYAN='\033[0;36m'
 NC='\033[0m'
-VERSION="2.6.5"
+VERSION="2.6.6"
 
 CONFIG_FILE="${HOME}/.proxmox-lab.conf"
 if [ -f "$CONFIG_FILE" ]; then
@@ -3175,7 +3175,7 @@ _startup_version_check() {
     return 0
   fi
 
-  cmd_update true
+  cmd_update true "$remote_version"
   echo ""
   echo "The script will now exit. Re-launch proxmox-lab.sh to run the new version."
   exit 0
@@ -3183,10 +3183,18 @@ _startup_version_check() {
 
 cmd_update() {
   local skip_confirm="${1:-false}"
+  local target_version="${2:-}"
 
   $skip_confirm || section_header "Update proxmox-lab.sh"
 
-  REMOTE_RAW="https://raw.githubusercontent.com/mpreissner/proxmox-lab-scripts/main/proxmox-lab.sh"
+  # When a specific version is provided (e.g., from _startup_version_check),
+  # download from the immutable tag ref rather than the main branch tip.
+  # This prevents a CDN propagation lag from serving an older version.
+  if [ -n "$target_version" ]; then
+    REMOTE_RAW="https://raw.githubusercontent.com/mpreissner/proxmox-lab-scripts/v${target_version}/proxmox-lab.sh"
+  else
+    REMOTE_RAW="https://raw.githubusercontent.com/mpreissner/proxmox-lab-scripts/main/proxmox-lab.sh"
+  fi
   CHANGELOG_RAW="https://raw.githubusercontent.com/mpreissner/proxmox-lab-scripts/main/CHANGELOG.md"
 
   $skip_confirm || echo "Checking for updates..."
