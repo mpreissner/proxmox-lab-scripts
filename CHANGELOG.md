@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.6.2] - 2026-02-14
+
+### Changed
+- `cmd_update` (menu option 10) now exits the script with a notice after a successful update instead of returning to the menu. This is consistent with the startup version check flow and prevents the user from continuing on the old version without relaunching.
+
+---
+
 ## [2.6.1] - 2026-02-14
 
 ### Fixed

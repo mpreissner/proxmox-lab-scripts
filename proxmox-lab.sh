@@ -13,7 +13,7 @@ YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 CYAN='\033[0;36m'
 NC='\033[0m'
-VERSION="2.6.1"
+VERSION="2.6.2"
 
 CONFIG_FILE="${HOME}/.proxmox-lab.conf"
 if [ -f "$CONFIG_FILE" ]; then
@@ -3251,8 +3251,9 @@ cmd_update() {
   echo -e "${GREEN}✓ Updated to v${REMOTE_VERSION}${NC}"
   if ! $skip_confirm; then
     echo ""
-    echo "Script updated. Re-launch proxmox-lab.sh for the new version."
-    echo "To push updated traffic profiles to containers, use option 4 (Install Traffic Generator)."
+    echo "Exiting — relaunch proxmox-lab.sh to run the new version."
+    echo "To push updated traffic profiles to containers, run option 4 (Install Traffic Generator) after relaunching."
+    exit 0
   fi
 }
 
@@ -3690,7 +3691,7 @@ main_menu() {
       7) ( cmd_setup_windows_vm ) || echo -e "${RED}Operation failed or was aborted.${NC}" ;;
       8) ( cmd_show_status ) || echo -e "${RED}Operation failed or was aborted.${NC}" ;;
       9) ( cmd_update_containers ) || echo -e "${RED}Operation failed or was aborted.${NC}" ;;
-      10) ( cmd_update ) || echo -e "${RED}Operation failed or was aborted.${NC}" ;;
+      10) cmd_update || echo -e "${RED}Operation failed or was aborted.${NC}" ;;
       11) ( cmd_stop_containers ) || echo -e "${RED}Operation failed or was aborted.${NC}" ;;
       12|q|Q)
         echo "Goodbye!"
