@@ -13,7 +13,7 @@ YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 CYAN='\033[0;36m'
 NC='\033[0m'
-VERSION="2.6.0"
+VERSION="2.6.1"
 
 CONFIG_FILE="${HOME}/.proxmox-lab.conf"
 if [ -f "$CONFIG_FILE" ]; then
@@ -1246,8 +1246,7 @@ cmd_start_containers() {
     tags="${_CT_TAGS[$CTID]:-}"
     name="${_CT_HOSTNAME[$CTID]:-}"
     # Filter to lab-managed containers
-    if [[ "$tags" != *"lab-managed"* ]] && \
-       [[ "$name" != hq-* ]] && [[ "$name" != branch-* ]]; then
+    if [[ "$tags" != *"lab-managed"* ]]; then
       continue
     fi
     STATUS="${_CT_STATUS[$CTID]:-stopped}"
@@ -1540,8 +1539,7 @@ cmd_stop_containers() {
   for CTID in $(echo "${!_CT_NODE[@]}" | tr ' ' '\n' | sort -n); do
     tags="${_CT_TAGS[$CTID]:-}"
     name="${_CT_HOSTNAME[$CTID]:-}"
-    if [[ "$tags" != *"lab-managed"* ]] && \
-       [[ "$name" != hq-* ]] && [[ "$name" != branch-* ]]; then
+    if [[ "$tags" != *"lab-managed"* ]]; then
       continue
     fi
     STATUS="${_CT_STATUS[$CTID]:-stopped}"
@@ -2972,8 +2970,7 @@ cmd_show_status() {
     local tags="${_CT_TAGS[$ctid]:-}"
 
     # Filter to lab-managed containers only
-    if [[ "$tags" != *"lab-managed"* ]] && \
-       [[ "$name" != hq-* ]] && [[ "$name" != branch-* ]]; then
+    if [[ "$tags" != *"lab-managed"* ]]; then
       continue
     fi
 
@@ -3069,8 +3066,7 @@ cmd_update_containers() {
   for ctid in $(echo "${!_CT_NODE[@]}" | tr ' ' '\n' | sort -n); do
     tags="${_CT_TAGS[$ctid]:-}"
     name="${_CT_HOSTNAME[$ctid]:-}"
-    if [[ "$tags" != *"lab-managed"* ]] && \
-       [[ "$name" != hq-* ]] && [[ "$name" != branch-* ]]; then
+    if [[ "$tags" != *"lab-managed"* ]]; then
       continue
     fi
     if [ "${_CT_STATUS[$ctid]:-stopped}" = "running" ]; then

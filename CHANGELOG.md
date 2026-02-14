@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.6.1] - 2026-02-14
+
+### Fixed
+- `cmd_start_containers`, `cmd_stop_containers`, `cmd_show_status`, and `cmd_update_containers` all filtered lab containers by `lab-managed` tag **or** hostname patterns `hq-*` / `branch-*`. The hostname fallback has been removed from all four functions; the `lab-managed` tag is now the sole filter, consistent with `cmd_system_cleanup` (fixed in v2.5.2).
+
+---
+
 ## [2.6.0] - 2026-02-14
 
 ### Added
