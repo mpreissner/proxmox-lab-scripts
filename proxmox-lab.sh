@@ -13,7 +13,7 @@ YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 CYAN='\033[0;36m'
 NC='\033[0m'
-VERSION="2.3.0"
+VERSION="2.4.0"
 
 CONFIG_FILE="${HOME}/.proxmox-lab.conf"
 if [ -f "$CONFIG_FILE" ]; then
@@ -77,6 +77,7 @@ WIZARD_MODE=false
 save_config() {
   cat > "$CONFIG_FILE" <<EOF
 # proxmox-lab configuration — saved $(date)
+SAVED_VERSION="${VERSION}"
 NODES="${NODES:-}"
 BRIDGE="${BRIDGE:-vmbr0}"
 STORAGE="${STORAGE:-local-lvm}"
@@ -110,6 +111,40 @@ _maybe_save_config() {
   if [[ ! "$save_choice" =~ ^[Nn]$ ]]; then
     save_config
   fi
+}
+
+_migrate_config() {
+  [ ! -f "$CONFIG_FILE" ] && return 0
+  local saved_ver="${SAVED_VERSION:-0.0.0}"
+  version_gt "$VERSION" "$saved_ver" || return 0
+
+  local changed=false
+
+  # v2.3.0: HQ_START/BRANCH_START replaced by HQ_RANGE/BRANCH_RANGE
+  if version_gt "2.3.0" "$saved_ver"; then
+    if grep -qE '^(HQ_START|BRANCH_START)=' "$CONFIG_FILE" 2>/dev/null; then
+      sed -i '/^HQ_START=/d; /^BRANCH_START=/d' "$CONFIG_FILE"
+      if [ -z "${HQ_RANGE:-}" ] || [ -z "${BRANCH_RANGE:-}" ]; then
+        echo -e "${YELLOW}  Config: removed HQ_START/BRANCH_START (replaced by HQ_RANGE/BRANCH_RANGE in v2.3.0).${NC}"
+        echo -e "${YELLOW}  CTID ranges will be prompted on next deploy.${NC}"
+      fi
+      changed=true
+    fi
+  fi
+
+  # Update SAVED_VERSION in conf
+  if grep -q '^SAVED_VERSION=' "$CONFIG_FILE"; then
+    sed -i "s/^SAVED_VERSION=.*/SAVED_VERSION=\"${VERSION}\"/" "$CONFIG_FILE"
+  else
+    echo "SAVED_VERSION=\"${VERSION}\"" >> "$CONFIG_FILE"
+  fi
+
+  if $changed; then
+    echo -e "${GREEN}✓ Config migrated from v${saved_ver} to v${VERSION}${NC}"
+  else
+    echo -e "${CYAN}  Config: updated from v${saved_ver} to v${VERSION} (no changes required)${NC}"
+  fi
+  _load_config
 }
 
 pick_storage() {
@@ -2911,13 +2946,57 @@ cmd_full_wizard() {
 # MODULE: Update
 # ============================================================
 
+_startup_version_check() {
+  local remote_version remote_changelog changelog_section
+
+  remote_version=$(curl -fsSL --connect-timeout 5 --max-time 5 \
+    "https://api.github.com/repos/mpreissner/proxmox-lab-scripts/releases/latest" \
+    2>/dev/null | grep '"tag_name"' | head -1 | cut -d'"' -f4 | sed 's/^v//')
+  [ -z "$remote_version" ] && return 0
+  version_gt "$remote_version" "$VERSION" || return 0
+
+  echo ""
+  echo -e "${YELLOW}══════════════════════════════════════════${NC}"
+  echo -e "${YELLOW}  Update available: v${VERSION} → v${remote_version}${NC}"
+  echo -e "${YELLOW}══════════════════════════════════════════${NC}"
+
+  remote_changelog=$(curl -fsSL --connect-timeout 10 \
+    "https://raw.githubusercontent.com/mpreissner/proxmox-lab-scripts/main/CHANGELOG.md" \
+    2>/dev/null) || true
+  if [ -n "$remote_changelog" ]; then
+    changelog_section=$(echo "$remote_changelog" | awk \
+      "/^## \[${remote_version}\]/{found=1; next} found && /^## \[/{exit} found{print}")
+    if [ -n "$changelog_section" ]; then
+      echo ""
+      echo "  What's new in v${remote_version}:"
+      echo "$changelog_section" | while IFS= read -r line; do
+        echo "  $line"
+      done
+    fi
+  fi
+
+  echo ""
+  read -p "Update now? [y/N]: " confirm
+  if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
+    echo ""
+    return 0
+  fi
+
+  cmd_update true
+  echo ""
+  echo "The script will now exit. Re-launch proxmox-lab.sh to run the new version."
+  exit 0
+}
+
 cmd_update() {
-  section_header "Update proxmox-lab.sh"
+  local skip_confirm="${1:-false}"
+
+  $skip_confirm || section_header "Update proxmox-lab.sh"
 
   REMOTE_RAW="https://raw.githubusercontent.com/mpreissner/proxmox-lab-scripts/main/proxmox-lab.sh"
   CHANGELOG_RAW="https://raw.githubusercontent.com/mpreissner/proxmox-lab-scripts/main/CHANGELOG.md"
 
-  echo "Checking for updates..."
+  $skip_confirm || echo "Checking for updates..."
   remote_script=$(curl -fsSL --connect-timeout 10 "$REMOTE_RAW") || {
     echo -e "${RED}Error: Could not reach GitHub. Check network connectivity.${NC}"
     return 1
@@ -2930,39 +3009,40 @@ cmd_update() {
     return 1
   fi
 
-  if [ "$REMOTE_VERSION" = "$VERSION" ]; then
-    echo -e "${GREEN}Already up to date (v${VERSION})${NC}"
-    return 0
-  fi
-
-  if ! version_gt "$REMOTE_VERSION" "$VERSION"; then
-    echo -e "${YELLOW}Warning: Remote version (v${REMOTE_VERSION}) is older than local (v${VERSION}). No update needed.${NC}"
-    return 0
-  fi
-
-  echo ""
-  echo -e "${CYAN}Update available: v${VERSION} → v${REMOTE_VERSION}${NC}"
-  echo ""
-
-  remote_changelog=$(curl -fsSL --connect-timeout 10 "$CHANGELOG_RAW") || true
-
-  if [ -n "$remote_changelog" ]; then
-    changelog_section=$(echo "$remote_changelog" | awk \
-      "/^## \[${REMOTE_VERSION}\]/{found=1; next} found && /^## \[/{exit} found{print}")
-    if [ -n "$changelog_section" ]; then
-      echo "  What's new in v${REMOTE_VERSION}:"
-      echo "$changelog_section" | while IFS= read -r line; do
-        echo "  $line"
-      done
-      echo ""
+  if ! $skip_confirm; then
+    if [ "$REMOTE_VERSION" = "$VERSION" ]; then
+      echo -e "${GREEN}Already up to date (v${VERSION})${NC}"
+      return 0
     fi
-  fi
 
-  read -p "Update proxmox-lab.sh? [y/N]: " confirm
+    if ! version_gt "$REMOTE_VERSION" "$VERSION"; then
+      echo -e "${YELLOW}Warning: Remote version (v${REMOTE_VERSION}) is older than local (v${VERSION}). No update needed.${NC}"
+      return 0
+    fi
 
-  if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
-    echo "Update cancelled."
-    return 0
+    echo ""
+    echo -e "${CYAN}Update available: v${VERSION} → v${REMOTE_VERSION}${NC}"
+    echo ""
+
+    remote_changelog=$(curl -fsSL --connect-timeout 10 "$CHANGELOG_RAW") || true
+
+    if [ -n "$remote_changelog" ]; then
+      changelog_section=$(echo "$remote_changelog" | awk \
+        "/^## \[${REMOTE_VERSION}\]/{found=1; next} found && /^## \[/{exit} found{print}")
+      if [ -n "$changelog_section" ]; then
+        echo "  What's new in v${REMOTE_VERSION}:"
+        echo "$changelog_section" | while IFS= read -r line; do
+          echo "  $line"
+        done
+        echo ""
+      fi
+    fi
+
+    read -p "Update proxmox-lab.sh? [y/N]: " confirm
+    if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
+      echo "Update cancelled."
+      return 0
+    fi
   fi
 
   SCRIPT_PATH="$(realpath "$0")"
@@ -2981,9 +3061,11 @@ cmd_update() {
   rm -f "$TEMP"
 
   echo -e "${GREEN}✓ Updated to v${REMOTE_VERSION}${NC}"
-  echo ""
-  echo "Script updated. Re-launch proxmox-lab.sh for the new version."
-  echo "To push updated traffic profiles to containers, use option 4 (Install Traffic Generator)."
+  if ! $skip_confirm; then
+    echo ""
+    echo "Script updated. Re-launch proxmox-lab.sh for the new version."
+    echo "To push updated traffic profiles to containers, use option 4 (Install Traffic Generator)."
+  fi
 }
 
 cmd_system_cleanup() {
@@ -3436,6 +3518,7 @@ main_menu() {
 # Support direct invocation: ./proxmox-lab.sh <command>
 # ============================================================
 
+_migrate_config
 case "${1:-}" in
   create-template)  cmd_create_template ;;
   deploy)           cmd_deploy_containers ;;
@@ -3449,7 +3532,7 @@ case "${1:-}" in
   windows-setup)    cmd_setup_windows_vm ;;
   _cleanup)         cmd_system_cleanup ;;
   --version|-v)     echo "proxmox-lab.sh v${VERSION}" ;;
-  "")               main_menu ;;
+  "")               _startup_version_check; main_menu ;;
   *)
     echo -e "${RED}Unknown command: $1${NC}"
     echo ""
