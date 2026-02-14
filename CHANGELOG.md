@@ -5,6 +5,44 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.2.1] - 2026-02-14
+
+### Fixed
+- `win-traffic.ps1`: replaced all em-dashes and en-dashes with ASCII hyphens; same PowerShell 5.x / Windows-1252 encoding issue as `setup-scheduled-tasks.ps1` in v2.2.0
+
+## [2.2.0] - 2026-02-13
+
+### Added
+- `_win_vm_write_file()`: writes a file from the Proxmox host into a Windows VM via QEMU guest agent using base64 chunking through PowerShell; handles files of any size in 6 KB chunks with `--synchronous 1` to guarantee write ordering; replaces the non-existent `qm guest file-write` subcommand
+- `cmd_setup_windows_vm`: pushes `win-traffic.ps1` and `setup-scheduled-tasks.ps1` to a Windows VM at `C:\ProgramData\proxmox-lab\`, then runs `setup-scheduled-tasks.ps1` to register scheduled tasks; cluster-aware via `_find_vm_node`; validates QEMU guest agent before proceeding
+- Menu option 10: Setup Windows VM Traffic Generator; Exit moved to option 11
+- `windows-setup` direct CLI command: `./proxmox-lab.sh windows-setup`
+- `WIN_TRAFFIC_PS1` and `WIN_SETUP_PS1` persisted to `~/.proxmox-lab.conf` (default `/root/win-traffic.ps1` and `/root/setup-scheduled-tasks.ps1`)
+- Deploy containers now uses dynamic CTID allocation: scans the cluster for occupied CTIDs before building the deployment list, then assigns the next free ID starting from the configured `HQ_START`/`BRANCH_START`, skipping any in use; guarantees all containers in the full stack are deployed even when part of the configured range is already occupied
+
+### Changed
+- `cmd_install_windows_cert` now uses `_win_vm_write_file` to copy the certificate into the VM instead of the non-existent `qm guest file-write` subcommand
+- Deploy config preview no longer shows fixed CTID offsets; shows "assigned from X, skipping any in use" since actual IDs are determined after scanning
+- Deploy summary and post-deployment output now show actual assigned CTIDs derived from the deploy list rather than computed `START + OFFSET` values
+
+### Fixed
+- `setup-scheduled-tasks.ps1`: replaced all em-dashes and en-dashes with ASCII hyphens; PowerShell 5.x on Windows reads files without a UTF-8 BOM using the system default encoding (Windows-1252), which mangled the UTF-8 multibyte sequences into characters that broke the parser
+
+## [2.1.0] - 2026-02-13
+
+### Added
+- `win-traffic.ps1`: PowerShell traffic generator for Windows VMs; five profiles (office-worker, sales, developer, executive, threat); duration-controlled loop with inter-session delays; logs to `C:\ProgramData\proxmox-lab\traffic-gen.log`; threat profile covers EICAR download, network DLP POST, GenAI DLP prompts to OpenAI/Anthropic/Gemini, and policy violations
+- `setup-scheduled-tasks.ps1`: creates Windows Task Scheduler entries for all five traffic profiles with M–F weekday schedules matching each persona's usage pattern; elevation check at startup; post-registration verification confirms each task was created; `-ScriptPath` parameter for non-default install paths
+- `cmd_install_windows_cert`: installs a Zscaler TLS root certificate on a Windows VM via QEMU guest agent; cluster-aware via `run_on_node` and `_find_vm_node`; displays running VM table across all cluster nodes; prompts for VM ID (saved to config as `WIN_VMID`); reuses `CERT_PATH` from existing config; copies cert to `C:\Windows\Temp` via stdin pipe; installs to Windows Trusted Root CA store via PowerShell; cleans up temp file on completion
+- `_find_vm_node()`: cluster-wide QEMU VM lookup using per-node `pvesh get /nodes/{node}/qemu` queries; mirrors `_find_template_node()` for LXC containers
+- Menu option 9: Install Windows VM Certificate; Exit moved to option 10
+- `windows-cert` direct CLI command: `./proxmox-lab.sh windows-cert`
+- `WIN_VMID` persisted to `~/.proxmox-lab.conf`
+
+### Changed
+- `qm guest file-write` uses stdin pipe (`< cert_file`) instead of shell-expanding file content as a positional argument; safer for base64-encoded PEM certificates
+- `C:\Windows\Temp` used as cert staging path instead of `C:\temp`; always present on Windows, eliminates the `mkdir C:\temp` pre-step
+
 ## [2.0.0] - 2026-02-13
 
 ### Added
@@ -134,6 +172,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `browse_random()` invalid test operator (`-file` → `-f`) in `random-timing.sh`
 - `RUNNING_CONTAINERS` in `cmd_install_traffic_gen` now correctly filters to running containers only (`pct list` filtered by status field)
 
+[2.2.1]: https://github.com/mpreissner/proxmox-lab-scripts/compare/v2.2.0...v2.2.1
+[2.2.0]: https://github.com/mpreissner/proxmox-lab-scripts/compare/v2.1.0...v2.2.0
+[2.1.0]: https://github.com/mpreissner/proxmox-lab-scripts/compare/v2.0.0...v2.1.0
 [2.0.0]: https://github.com/mpreissner/proxmox-lab-scripts/compare/v1.2.4...v2.0.0
 [1.2.4]: https://github.com/mpreissner/proxmox-lab-scripts/compare/v1.2.3...v1.2.4
 [1.2.3]: https://github.com/mpreissner/proxmox-lab-scripts/compare/v1.2.2...v1.2.3

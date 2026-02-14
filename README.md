@@ -23,6 +23,7 @@ Provides a complete workflow for building a multi-container lab environment that
 - **Deploys Data Center and Branch network containers** with appropriate configurations, distributed across multiple Proxmox cluster nodes with auto-balanced or manual placement
 - **Generates realistic traffic patterns** for different user/server profiles, including GenAI platform usage
 - **Configures security tests** independently of normal traffic — DLP (network, GenAI prompt/file/image OCR), AV/malware, policy violations, UEBA anomalies
+- **Installs TLS inspection certificates on Windows VMs** via QEMU guest agent, cluster-aware across all Proxmox nodes
 
 ## Script
 
@@ -39,7 +40,9 @@ A single interactive menu covering the full lab lifecycle.
 6. **Show Status** — view all containers with running state and traffic gen status at a glance
 7. **Full Setup Wizard** — runs steps 1 → 2 → 3 → 4 in sequence
 8. **Update** — check GitHub for a newer version, show changelog, and self-patch the script in place
-9. **Exit**
+9. **Install Windows VM Certificate** — install a TLS inspection root CA on a Windows VM via QEMU guest agent
+10. **Setup Windows VM Traffic Generator** — push `win-traffic.ps1` and `setup-scheduled-tasks.ps1` to a Windows VM and register scheduled tasks
+11. **Exit**
 
 **Interactive menu:**
 ```bash
@@ -56,6 +59,8 @@ A single interactive menu covering the full lab lifecycle.
 ./proxmox-lab.sh status
 ./proxmox-lab.sh wizard
 ./proxmox-lab.sh update
+./proxmox-lab.sh windows-cert
+./proxmox-lab.sh windows-setup
 ```
 
 **Config persistence:**
@@ -73,6 +78,7 @@ On first run, the script prompts for all values as usual. After completing any c
 - Local storage available (local-lvm or local-zfs); shared NFS/Ceph storage supported for multi-node clusters
 - TLS inspection root CA certificate on the Proxmox host, if your network performs HTTPS inspection (see below)
 - Multi-node cluster: node IPs resolvable via `/etc/hosts` or present in `/etc/pve/corosync.conf` (DNS not required)
+- Windows VM certificate install: QEMU guest agent installed and running inside the Windows VM
 
 ### Full wizard (recommended)
 
@@ -112,6 +118,32 @@ To verify the certificate is trusted in a container after deployment:
 ```bash
 pct exec 200 -- curl -sv https://www.google.com 2>&1 | grep -E "SSL|issuer|subject"
 ```
+
+### Windows VM Certificate
+
+To install the TLS inspection certificate on a Windows VM, ensure the QEMU guest agent is installed and running inside Windows, then run:
+
+```bash
+./proxmox-lab.sh windows-cert
+```
+
+The script discovers all running VMs across the cluster, prompts for the target VM ID, and installs the certificate to the Windows Trusted Root Certification Authorities store via PowerShell through the QEMU guest agent. The same `CERT_PATH` used for LXC containers is reused — no separate copy is needed. The VM ID is saved to `~/.proxmox-lab.conf` for subsequent runs.
+
+To verify in Windows after installation:
+- Run `certmgr.msc` → Trusted Root Certification Authorities → Certificates
+- Look for the Zscaler root CA entry
+
+### Windows Traffic Generation
+
+`win-traffic.ps1` and `setup-scheduled-tasks.ps1` are companion scripts for Windows VMs. To deploy them automatically, copy both files to the Proxmox host (e.g., `/root/`) and run:
+
+```bash
+./proxmox-lab.sh windows-setup
+```
+
+The script pushes both files to `C:\ProgramData\proxmox-lab\` on the target VM via QEMU guest agent and runs `setup-scheduled-tasks.ps1` to register M-F scheduled tasks for all five traffic profiles. The VM ID and script paths are saved to `~/.proxmox-lab.conf` for subsequent runs.
+
+To verify after setup, open Task Scheduler on the Windows VM and check for the registered lab tasks.
 
 ### Verification
 
