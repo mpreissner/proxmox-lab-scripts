@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.5.2] - 2026-02-14
+
+### Fixed
+- `_load_ct_data()` now also queries `/nodes/{node}/qemu` on each cluster node and adds VM IDs to the shared ID map. Proxmox uses a unified CTID/VMID namespace, so LXC containers and QEMU VMs cannot share IDs. Previously, `_next_free_ctid_in_range()` was unaware of VM IDs, causing deploy failures when a calculated CTID was already in use by a VM.
+- System cleanup (`cmd_system_cleanup`) now matches containers exclusively by the `lab-managed` tag. The previous hostname-pattern fallback (`hq-*` / `branch-*`) caused non-lab containers with matching hostnames to be erroneously included in the cleanup target list.
+
+---
+
 ## [2.5.1] - 2026-02-14
 
 ### Added

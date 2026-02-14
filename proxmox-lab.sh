@@ -13,7 +13,7 @@ YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 CYAN='\033[0;36m'
 NC='\033[0m'
-VERSION="2.5.1"
+VERSION="2.5.2"
 
 CONFIG_FILE="${HOME}/.proxmox-lab.conf"
 if [ -f "$CONFIG_FILE" ]; then
@@ -263,9 +263,9 @@ run_on_node() {
 }
 
 # Populate global _CT_NODE, _CT_STATUS, _CT_HOSTNAME, _CT_TAGS indexed by CTID.
-# Queries each cluster node individually via pvesh /nodes/{node}/lxc — the
-# Proxmox API proxies these requests cluster-wide, so this works from any node
-# and is reliable regardless of whether /cluster/resources is available.
+# Queries each cluster node individually via pvesh /nodes/{node}/lxc and
+# /nodes/{node}/qemu — Proxmox uses a unified CTID/VMID namespace, so both
+# LXC containers and QEMU VMs are added to _CT_NODE to prevent ID collisions.
 _load_ct_data() {
   declare -gA _CT_NODE=() _CT_STATUS=() _CT_HOSTNAME=() _CT_TAGS=()
   local local_node nodes all_parsed=""
@@ -277,6 +277,8 @@ _load_ct_data() {
 
   for node in $nodes; do
     local raw node_parsed
+
+    # LXC containers — full metadata
     raw=$(pvesh get /nodes/"$node"/lxc --output-format json 2>/dev/null) || raw="[]"
     node_parsed=$(echo "$raw" | python3 -c "
 import sys,json
@@ -286,6 +288,19 @@ try:
         print('{}\t{}\t{}\t{}\t{}'.format(
             r.get('vmid',''), node, r.get('status',''),
             r.get('name',''), r.get('tags') or ''))
+except: pass
+" 2>/dev/null)
+    [ -n "$node_parsed" ] && all_parsed="${all_parsed}${all_parsed:+$'\n'}${node_parsed}"
+
+    # QEMU VMs — IDs only (no tags/hostname needed; just occupy the ID space)
+    raw=$(pvesh get /nodes/"$node"/qemu --output-format json 2>/dev/null) || raw="[]"
+    node_parsed=$(echo "$raw" | python3 -c "
+import sys,json
+node='$node'
+try:
+    for r in json.load(sys.stdin):
+        vmid=r.get('vmid','')
+        if vmid: print('{}\t{}\t{}\t{}\t'.format(vmid, node, r.get('status',''), r.get('name','')))
 except: pass
 " 2>/dev/null)
     [ -n "$node_parsed" ] && all_parsed="${all_parsed}${all_parsed:+$'\n'}${node_parsed}"
@@ -3223,8 +3238,7 @@ cmd_system_cleanup() {
   for ctid in $(echo "${!_CT_NODE[@]}" | tr ' ' '\n' | sort -n); do
     name="${_CT_HOSTNAME[$ctid]:-}"
     tags="${_CT_TAGS[$ctid]:-}"
-    if [[ "$tags" == *"lab-managed"* ]] || \
-       [[ "$name" == hq-* ]] || [[ "$name" == branch-* ]]; then
+    if [[ "$tags" == *"lab-managed"* ]]; then
       LAB_CTIDS+=($ctid)
       LAB_CT_NODE[$ctid]="${_CT_NODE[$ctid]}"
       LAB_CT_STATUS[$ctid]="${_CT_STATUS[$ctid]}"
