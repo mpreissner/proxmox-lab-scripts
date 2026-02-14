@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.3.0] - 2026-02-14
+
+### Added
+- `read_ctid_range()`: interactive prompt for `START-END` CTID ranges with format validation, start-less-than-end check, and minimum capacity enforcement; used by deploy, start, stop, and install-traffic
+- `_next_free_ctid_in_range()`: bounded variant of `_next_free_ctid`; scans only within the specified range and returns an error if the range cannot fit the required number of containers, allowing deploy to fail cleanly rather than silently under-deploying
+- `_build_default_profiles()`: dynamically builds the CTID-to-profile map by scanning `HQ_RANGE`/`BRANCH_RANGE` for `lab-managed` containers in CTID order and mapping them positionally to the profile order; branch always reserves the first two slots for `office-worker` (`br_ow_min=2`) before assigning remaining profiles in order; replaces the hardcoded `DEFAULT_PROFILES` array
+
+### Changed
+- CTID configuration now uses explicit ranges (`HQ_RANGE`, `BRANCH_RANGE`, e.g. `200-210`) instead of start points (`HQ_START`, `BRANCH_START`); both the start and end of each group's range are specified explicitly, eliminating the implicit assumption that the DC range ends before the branch range begins
+- `VLAN_HQ` and `VLAN_BRANCH` no longer have built-in defaults (previously `200` and `201`); users must supply their own values matching their network topology
+- Deploy, start, stop, and install-traffic scope options all parse the explicit `HQ_RANGE`/`BRANCH_RANGE` values rather than computing `START + N` offsets
+- `DEFAULT_PROFILES` static array removed; replaced by `_build_default_profiles()` called after `_load_ct_data` in `cmd_install_traffic_gen`
+
+### Notes
+- **Config migration:** existing `~/.proxmox-lab.conf` files with `HQ_START`/`BRANCH_START` entries will not break on load, but those values are no longer used. On the next config save the new `HQ_RANGE`/`BRANCH_RANGE` keys will be written and the old keys will be dropped. Users will be prompted for range values on first run after upgrading.
+
 ## [2.2.1] - 2026-02-14
 
 ### Fixed
