@@ -5,6 +5,24 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.2.0] - 2026-02-13
+
+### Added
+- `_win_vm_write_file()`: writes a file from the Proxmox host into a Windows VM via QEMU guest agent using base64 chunking through PowerShell; handles files of any size in 6 KB chunks with `--synchronous 1` to guarantee write ordering; replaces the non-existent `qm guest file-write` subcommand
+- `cmd_setup_windows_vm`: pushes `win-traffic.ps1` and `setup-scheduled-tasks.ps1` to a Windows VM at `C:\ProgramData\proxmox-lab\`, then runs `setup-scheduled-tasks.ps1` to register scheduled tasks; cluster-aware via `_find_vm_node`; validates QEMU guest agent before proceeding
+- Menu option 10: Setup Windows VM Traffic Generator; Exit moved to option 11
+- `windows-setup` direct CLI command: `./proxmox-lab.sh windows-setup`
+- `WIN_TRAFFIC_PS1` and `WIN_SETUP_PS1` persisted to `~/.proxmox-lab.conf` (default `/root/win-traffic.ps1` and `/root/setup-scheduled-tasks.ps1`)
+- Deploy containers now uses dynamic CTID allocation: scans the cluster for occupied CTIDs before building the deployment list, then assigns the next free ID starting from the configured `HQ_START`/`BRANCH_START`, skipping any in use; guarantees all containers in the full stack are deployed even when part of the configured range is already occupied
+
+### Changed
+- `cmd_install_windows_cert` now uses `_win_vm_write_file` to copy the certificate into the VM instead of the non-existent `qm guest file-write` subcommand
+- Deploy config preview no longer shows fixed CTID offsets; shows "assigned from X, skipping any in use" since actual IDs are determined after scanning
+- Deploy summary and post-deployment output now show actual assigned CTIDs derived from the deploy list rather than computed `START + OFFSET` values
+
+### Fixed
+- `setup-scheduled-tasks.ps1`: replaced all em-dashes and en-dashes with ASCII hyphens; PowerShell 5.x on Windows reads files without a UTF-8 BOM using the system default encoding (Windows-1252), which mangled the UTF-8 multibyte sequences into characters that broke the parser
+
 ## [2.1.0] - 2026-02-13
 
 ### Added
@@ -149,6 +167,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `browse_random()` invalid test operator (`-file` → `-f`) in `random-timing.sh`
 - `RUNNING_CONTAINERS` in `cmd_install_traffic_gen` now correctly filters to running containers only (`pct list` filtered by status field)
 
+[2.2.0]: https://github.com/mpreissner/proxmox-lab-scripts/compare/v2.1.0...v2.2.0
 [2.1.0]: https://github.com/mpreissner/proxmox-lab-scripts/compare/v2.0.0...v2.1.0
 [2.0.0]: https://github.com/mpreissner/proxmox-lab-scripts/compare/v1.2.4...v2.0.0
 [1.2.4]: https://github.com/mpreissner/proxmox-lab-scripts/compare/v1.2.3...v1.2.4

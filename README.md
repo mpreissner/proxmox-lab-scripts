@@ -41,7 +41,8 @@ A single interactive menu covering the full lab lifecycle.
 7. **Full Setup Wizard** — runs steps 1 → 2 → 3 → 4 in sequence
 8. **Update** — check GitHub for a newer version, show changelog, and self-patch the script in place
 9. **Install Windows VM Certificate** — install a TLS inspection root CA on a Windows VM via QEMU guest agent
-10. **Exit**
+10. **Setup Windows VM Traffic Generator** — push `win-traffic.ps1` and `setup-scheduled-tasks.ps1` to a Windows VM and register scheduled tasks
+11. **Exit**
 
 **Interactive menu:**
 ```bash
@@ -59,6 +60,7 @@ A single interactive menu covering the full lab lifecycle.
 ./proxmox-lab.sh wizard
 ./proxmox-lab.sh update
 ./proxmox-lab.sh windows-cert
+./proxmox-lab.sh windows-setup
 ```
 
 **Config persistence:**
@@ -133,7 +135,15 @@ To verify in Windows after installation:
 
 ### Windows Traffic Generation
 
-`win-traffic.ps1` and `setup-scheduled-tasks.ps1` are companion scripts for Windows VMs. Copy them to the VM (e.g., `C:\ProgramData\proxmox-lab\`) and run `setup-scheduled-tasks.ps1` as Administrator to register M–F scheduled tasks for all five traffic profiles. See the script headers for details.
+`win-traffic.ps1` and `setup-scheduled-tasks.ps1` are companion scripts for Windows VMs. To deploy them automatically, copy both files to the Proxmox host (e.g., `/root/`) and run:
+
+```bash
+./proxmox-lab.sh windows-setup
+```
+
+The script pushes both files to `C:\ProgramData\proxmox-lab\` on the target VM via QEMU guest agent and runs `setup-scheduled-tasks.ps1` to register M-F scheduled tasks for all five traffic profiles. The VM ID and script paths are saved to `~/.proxmox-lab.conf` for subsequent runs.
+
+To verify after setup, open Task Scheduler on the Windows VM and check for the registered lab tasks.
 
 ### Verification
 

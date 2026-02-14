@@ -13,7 +13,7 @@ YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 CYAN='\033[0;36m'
 NC='\033[0m'
-VERSION="2.1.0"
+VERSION="2.2.0"
 
 CONFIG_FILE="${HOME}/.proxmox-lab.conf"
 if [ -f "$CONFIG_FILE" ]; then
@@ -92,6 +92,8 @@ CRON_OFFICE="${CRON_OFFICE:-*/5 8-18 * * 1-5}"
 CRON_SECURITY="${CRON_SECURITY:-*/30 * * * *}"
 CERT_PATH="${CERT_PATH:-}"
 WIN_VMID="${WIN_VMID:-}"
+WIN_TRAFFIC_PS1="${WIN_TRAFFIC_PS1:-/root/win-traffic.ps1}"
+WIN_SETUP_PS1="${WIN_SETUP_PS1:-/root/setup-scheduled-tasks.ps1}"
 EOF
   echo -e "${GREEN}✓ Settings saved to ~/.proxmox-lab.conf${NC}"
 }
@@ -261,6 +263,27 @@ except: pass
     _CT_HOSTNAME[$ctid]="$name"
     _CT_TAGS[$ctid]="$tags"
   done <<< "$all_parsed"
+}
+
+# Find the next CTID >= start that is not already in use on the cluster
+# (_CT_NODE must be populated via _load_ct_data) and not in the
+# space-separated claimed list (for within-session deduplication).
+_next_free_ctid() {
+  local start="$1"
+  local claimed="${2:-}"
+  local candidate=$start
+  while true; do
+    if [ -n "${_CT_NODE[$candidate]+x}" ]; then
+      candidate=$((candidate + 1))
+      continue
+    fi
+    if [[ " $claimed " == *" $candidate "* ]]; then
+      candidate=$((candidate + 1))
+      continue
+    fi
+    echo "$candidate"
+    return
+  done
 }
 
 # Find which cluster node holds a given CTID (container or template).
@@ -679,13 +702,13 @@ cmd_deploy_containers() {
     read_with_default "Starting CTID for Data Center" "${HQ_START:-200}" "HQ_START"
     read_with_default "Data Center VLAN tag" "${VLAN_HQ:-200}" "VLAN_HQ"
 
-    echo -e "${CYAN}Data Center containers will be:${NC}"
-    echo "  CT ${HQ_START}: hq-fileserver (256 MB)"
-    echo "  CT $((HQ_START+1)): hq-webapp (256 MB)"
-    echo "  CT $((HQ_START+2)): hq-email (256 MB)"
-    echo "  CT $((HQ_START+3)): hq-monitoring (512 MB)"
-    echo "  CT $((HQ_START+4)): hq-devops (512 MB)"
-    echo "  CT $((HQ_START+5)): hq-database (256 MB)"
+    echo -e "${CYAN}Data Center containers (CTIDs assigned from ${HQ_START}, skipping any in use):${NC}"
+    echo "  hq-fileserver (256 MB)"
+    echo "  hq-webapp (256 MB)"
+    echo "  hq-email (256 MB)"
+    echo "  hq-monitoring (512 MB)"
+    echo "  hq-devops (512 MB)"
+    echo "  hq-database (256 MB)"
   fi
 
   # 8. Branch Config
@@ -695,12 +718,12 @@ cmd_deploy_containers() {
     read_with_default "Starting CTID for Branch" "${BRANCH_START:-220}" "BRANCH_START"
     read_with_default "Branch VLAN tag" "${VLAN_BRANCH:-201}" "VLAN_BRANCH"
 
-    echo -e "${CYAN}Branch containers will be:${NC}"
-    echo "  CT ${BRANCH_START}: branch-worker1 (256 MB)"
-    echo "  CT $((BRANCH_START+1)): branch-worker2 (256 MB)"
-    echo "  CT $((BRANCH_START+2)): branch-sales (256 MB)"
-    echo "  CT $((BRANCH_START+3)): branch-dev (512 MB)"
-    echo "  CT $((BRANCH_START+4)): branch-exec (256 MB)"
+    echo -e "${CYAN}Branch containers (CTIDs assigned from ${BRANCH_START}, skipping any in use):${NC}"
+    echo "  branch-worker1 (256 MB)"
+    echo "  branch-worker2 (256 MB)"
+    echo "  branch-sales (256 MB)"
+    echo "  branch-dev (512 MB)"
+    echo "  branch-exec (256 MB)"
   fi
 
   declare -A HQ_CONTAINERS=(
@@ -720,12 +743,20 @@ cmd_deploy_containers() {
     [4]="branch-exec"
   )
 
-  # Build full container list with CTID, hostname, profile, VLAN, memory
-  # Format: CTID hostname vlan mem
+  # Scan existing cluster CTs so we can assign only free CTIDs.
+  echo "Scanning for existing containers..."
+  _load_ct_data
+
+  # Build full container list with CTID, hostname, profile, VLAN, memory.
+  # CTIDs are assigned sequentially from the configured start, skipping any
+  # that already exist on the cluster, guaranteeing a full stack deployment.
+  # Format: CTID hostname vlan mem group offset
   declare -a DEPLOY_LIST=()
+  _claimed_ctids=""
   if $DEPLOY_HQ; then
     for OFFSET in 0 1 2 3 4 5; do
-      CTID=$((HQ_START + OFFSET))
+      CTID=$(_next_free_ctid "$HQ_START" "$_claimed_ctids")
+      _claimed_ctids="$_claimed_ctids $CTID"
       HOSTNAME="${HQ_CONTAINERS[$OFFSET]}"
       if [[ "$HOSTNAME" =~ (monitoring|devops) ]]; then MEM=512; else MEM=256; fi
       DEPLOY_LIST+=("${CTID} ${HOSTNAME} ${VLAN_HQ} ${MEM} hq ${OFFSET}")
@@ -733,7 +764,8 @@ cmd_deploy_containers() {
   fi
   if $DEPLOY_BRANCH; then
     for OFFSET in 0 1 2 3 4; do
-      CTID=$((BRANCH_START + OFFSET))
+      CTID=$(_next_free_ctid "$BRANCH_START" "$_claimed_ctids")
+      _claimed_ctids="$_claimed_ctids $CTID"
       HOSTNAME="${BRANCH_CONTAINERS[$OFFSET]}"
       if [[ "$HOSTNAME" == "branch-dev" ]]; then MEM=512; else MEM=256; fi
       DEPLOY_LIST+=("${CTID} ${HOSTNAME} ${VLAN_BRANCH} ${MEM} branch ${OFFSET}")
@@ -867,18 +899,28 @@ cmd_deploy_containers() {
   echo "Nodes:           ${SELECTED_NODES[*]}"
 
   if $DEPLOY_HQ; then
+    _hq_ctids=""
+    for entry in "${DEPLOY_LIST[@]}"; do
+      read -r ctid _ _ _ grp _ <<< "$entry"
+      [ "$grp" = "hq" ] && _hq_ctids="$_hq_ctids $ctid"
+    done
     echo ""
     echo -e "${CYAN}Data Center:${NC}"
     echo "  VLAN Tag:    ${VLAN_HQ}"
-    echo "  CTID Range:  ${HQ_START}-$((HQ_START+5))"
+    echo "  CTIDs:       ${_hq_ctids# }"
     echo "  Containers:  6"
   fi
 
   if $DEPLOY_BRANCH; then
+    _br_ctids=""
+    for entry in "${DEPLOY_LIST[@]}"; do
+      read -r ctid _ _ _ grp _ <<< "$entry"
+      [ "$grp" = "branch" ] && _br_ctids="$_br_ctids $ctid"
+    done
     echo ""
     echo -e "${CYAN}Branch UserNet:${NC}"
     echo "  VLAN Tag:    ${VLAN_BRANCH}"
-    echo "  CTID Range:  ${BRANCH_START}-$((BRANCH_START+4))"
+    echo "  CTIDs:       ${_br_ctids# }"
     echo "  Containers:  5"
   fi
 
@@ -919,16 +961,6 @@ except: print('0')
     read -r CTID HOSTNAME VLAN MEM group offset <<< "$entry"
     TARGET_NODE="${CTID_NODES[$CTID]}"
 
-    # Check if CT already exists cluster-wide using per-node queries
-    ct_exists=false
-    if [ -n "$(_find_template_node "$CTID")" ]; then
-      ct_exists=true
-    fi
-    if $ct_exists; then
-      echo -e "${YELLOW}⚠ CT ${CTID} already exists, skipping ${HOSTNAME}${NC}"
-      continue
-    fi
-
     echo "Creating CT ${CTID}: ${HOSTNAME} → ${TARGET_NODE}..."
 
     # Determine where to run pct clone:
@@ -962,18 +994,18 @@ except: print('0')
 
   if $DEPLOY_HQ; then
     echo -e "${CYAN}Data Center (VLAN ${VLAN_HQ}):${NC}"
-    for OFFSET in 0 1 2 3 4 5; do
-      CTID=$((HQ_START + OFFSET))
-      echo "  CT ${CTID}: ${HQ_CONTAINERS[$OFFSET]} → ${CTID_NODES[$CTID]}"
+    for entry in "${DEPLOY_LIST[@]}"; do
+      read -r ctid hostname _ _ grp _ <<< "$entry"
+      [ "$grp" = "hq" ] && echo "  CT ${ctid}: ${hostname} → ${CTID_NODES[$ctid]}"
     done
   fi
 
   if $DEPLOY_BRANCH; then
     echo ""
     echo -e "${CYAN}Branch UserNet (VLAN ${VLAN_BRANCH}):${NC}"
-    for OFFSET in 0 1 2 3 4; do
-      CTID=$((BRANCH_START + OFFSET))
-      echo "  CT ${CTID}: ${BRANCH_CONTAINERS[$OFFSET]} → ${CTID_NODES[$CTID]}"
+    for entry in "${DEPLOY_LIST[@]}"; do
+      read -r ctid hostname _ _ grp _ <<< "$entry"
+      [ "$grp" = "branch" ] && echo "  CT ${ctid}: ${hostname} → ${CTID_NODES[$ctid]}"
     done
   fi
 
@@ -3022,6 +3054,35 @@ cmd_system_cleanup() {
 }
 
 # ============================================================
+# Write a local file into a Windows VM via QEMU guest agent.
+# Uses base64 chunking + PowerShell to avoid command-line length limits
+# and bypass the non-existent 'qm guest file-write' subcommand.
+# Each chunk is written synchronously so ordering is guaranteed.
+# Args: <node> <vmid> <local_path> <windows_dest_path>
+_win_vm_write_file() {
+  local node="$1" vmid="$2" local_path="$3" win_path="$4"
+  local b64 chunk offset=0 chunk_size=6000 first=true
+  b64=$(base64 < "$local_path" | tr -d '\n')
+  local total=${#b64}
+  while [ $offset -lt $total ]; do
+    chunk="${b64:$offset:$chunk_size}"
+    offset=$((offset + chunk_size))
+    if $first; then
+      run_on_node "$node" qm guest exec --synchronous 1 "$vmid" -- \
+        powershell.exe -ExecutionPolicy Bypass -NonInteractive -Command \
+        "[System.IO.File]::WriteAllBytes('${win_path}',[Convert]::FromBase64String('${chunk}'))" \
+        2>/dev/null
+      first=false
+    else
+      run_on_node "$node" qm guest exec --synchronous 1 "$vmid" -- \
+        powershell.exe -ExecutionPolicy Bypass -NonInteractive -Command \
+        "\$b=[Convert]::FromBase64String('${chunk}');\$f=[System.IO.File]::Open('${win_path}',[System.IO.FileMode]::Append);\$f.Write(\$b,0,\$b.Length);\$f.Dispose()" \
+        2>/dev/null
+    fi
+  done
+}
+
+# ============================================================
 # MODULE: Install Windows VM Certificate
 # ============================================================
 
@@ -3100,10 +3161,10 @@ for r in json.load(sys.stdin):
   CERT_FILENAME=$(basename "$CERT_PATH")
   local WIN_TEMP_PATH="C:\\Windows\\Temp\\${CERT_FILENAME}"
 
-  # --- Copy certificate to VM via stdin ---
+  # --- Copy certificate to VM via base64+PowerShell ---
   echo ""
   echo "  Copying certificate to VM ${WIN_VMID}..."
-  if ! run_on_node "$_vm_node" qm guest file-write "$WIN_VMID" "$WIN_TEMP_PATH" < "$CERT_PATH"; then
+  if ! _win_vm_write_file "$_vm_node" "$WIN_VMID" "$CERT_PATH" "$WIN_TEMP_PATH"; then
     echo -e "${RED}  Error: Failed to copy certificate to VM.${NC}"
     return 1
   fi
@@ -3130,6 +3191,115 @@ for r in json.load(sys.stdin):
 }
 
 # ============================================================
+# MODULE: Setup Windows VM Traffic Generator
+# ============================================================
+
+cmd_setup_windows_vm() {
+  _load_config
+  section_header "Setup Windows VM Traffic Generator"
+
+  # --- Show running VMs across cluster ---
+  echo ""
+  echo "Running VMs on cluster:"
+  local _nodes _node
+  _nodes=$(get_cluster_nodes 2>/dev/null)
+  [ -z "$_nodes" ] && _nodes=$(get_local_node)
+  printf "  %-8s %-24s %s\n" "VMID" "Name" "Node"
+  printf "  %-8s %-24s %s\n" "--------" "------------------------" "--------"
+  for _node in $_nodes; do
+    pvesh get /nodes/"$_node"/qemu --output-format json 2>/dev/null | python3 -c "
+import sys,json
+node='$_node'
+for r in json.load(sys.stdin):
+    if r.get('status') == 'running':
+        print('  {:<8} {:<24} {}'.format(r.get('vmid',''), r.get('name','-')[:24], node))
+" 2>/dev/null
+  done
+  echo ""
+
+  # --- VM ID ---
+  if [ -n "${WIN_VMID:-}" ]; then
+    read -p "  Windows VM ID [${WIN_VMID}]: " _input
+    WIN_VMID="${_input:-$WIN_VMID}"
+  else
+    while [ -z "${WIN_VMID:-}" ]; do
+      read -p "  Windows VM ID: " WIN_VMID
+    done
+  fi
+
+  # --- Locate VM on cluster ---
+  echo "  Locating VM ${WIN_VMID} on cluster..."
+  local _vm_node
+  _vm_node=$(_find_vm_node "$WIN_VMID")
+  if [ -z "$_vm_node" ]; then
+    echo -e "${RED}  Error: VM ${WIN_VMID} not found on any cluster node.${NC}"
+    return 1
+  fi
+  echo -e "  ${GREEN}Found VM ${WIN_VMID} on node: ${_vm_node}${NC}"
+
+  # --- Check VM is running ---
+  if ! run_on_node "$_vm_node" qm status "$WIN_VMID" 2>/dev/null | grep -q "running"; then
+    echo -e "${RED}  Error: VM ${WIN_VMID} is not running. Start it and try again.${NC}"
+    return 1
+  fi
+
+  # --- Check QEMU guest agent ---
+  echo "  Checking QEMU guest agent..."
+  if ! run_on_node "$_vm_node" qm agent "$WIN_VMID" ping 2>/dev/null; then
+    echo -e "${RED}  Error: QEMU guest agent is not responding on VM ${WIN_VMID}.${NC}"
+    echo "  Install the QEMU guest agent in Windows and ensure the service is running."
+    return 1
+  fi
+  echo -e "  ${GREEN}Guest agent is available.${NC}"
+
+  # --- Script paths on Proxmox host ---
+  echo ""
+  echo -e "${BLUE}Script Paths (on this Proxmox host)${NC}"
+  read_with_default "win-traffic.ps1 path" "${WIN_TRAFFIC_PS1:-/root/win-traffic.ps1}" "WIN_TRAFFIC_PS1"
+  read_with_default "setup-scheduled-tasks.ps1 path" "${WIN_SETUP_PS1:-/root/setup-scheduled-tasks.ps1}" "WIN_SETUP_PS1"
+  for f in "$WIN_TRAFFIC_PS1" "$WIN_SETUP_PS1"; do
+    if [ ! -f "$f" ]; then
+      echo -e "${RED}  Error: File not found: ${f}${NC}"
+      return 1
+    fi
+  done
+
+  # --- Create destination directory ---
+  local WIN_DEST_DIR='C:\ProgramData\proxmox-lab'
+  echo ""
+  echo "  Creating ${WIN_DEST_DIR} on VM ${WIN_VMID}..."
+  run_on_node "$_vm_node" qm guest exec "$WIN_VMID" -- \
+    powershell.exe -ExecutionPolicy Bypass -NonInteractive -Command \
+    "New-Item -ItemType Directory -Force -Path 'C:\ProgramData\proxmox-lab' | Out-Null" \
+    2>/dev/null
+
+  # --- Copy scripts ---
+  echo "  Copying win-traffic.ps1..."
+  _win_vm_write_file "$_vm_node" "$WIN_VMID" "$WIN_TRAFFIC_PS1" 'C:\ProgramData\proxmox-lab\win-traffic.ps1'
+  echo -e "  ${GREEN}✓ win-traffic.ps1 copied${NC}"
+
+  echo "  Copying setup-scheduled-tasks.ps1..."
+  _win_vm_write_file "$_vm_node" "$WIN_VMID" "$WIN_SETUP_PS1" 'C:\ProgramData\proxmox-lab\setup-scheduled-tasks.ps1'
+  echo -e "  ${GREEN}✓ setup-scheduled-tasks.ps1 copied${NC}"
+
+  # --- Run setup-scheduled-tasks.ps1 ---
+  echo ""
+  echo "  Running setup-scheduled-tasks.ps1..."
+  run_on_node "$_vm_node" qm guest exec "$WIN_VMID" -- \
+    powershell.exe -ExecutionPolicy Bypass -NonInteractive \
+    -File 'C:\ProgramData\proxmox-lab\setup-scheduled-tasks.ps1' \
+    2>/dev/null
+  echo -e "  ${GREEN}✓ Scheduled tasks configured${NC}"
+
+  echo ""
+  echo -e "${GREEN}✓ Windows VM traffic generator setup complete.${NC}"
+  echo "  Scripts installed to: ${WIN_DEST_DIR}"
+  echo "  Verify in Windows: open Task Scheduler and check for scheduled lab tasks."
+
+  _maybe_save_config
+}
+
+# ============================================================
 # MAIN MENU
 # ============================================================
 
@@ -3149,9 +3319,10 @@ main_menu() {
     echo "  7) Full Setup Wizard  (steps 1 → 2 → 3 → 4)"
     echo "  8) Update"
     echo "  9) Install Windows VM Certificate"
-    echo " 10) Exit"
+    echo " 10) Setup Windows VM Traffic Generator"
+    echo " 11) Exit"
     echo ""
-    read -p "Select option [1-10]: " choice
+    read -p "Select option [1-11]: " choice
 
     case "$choice" in
       1) ( cmd_create_template ) || echo -e "${RED}Operation failed or was aborted.${NC}" ;;
@@ -3163,12 +3334,13 @@ main_menu() {
       7) ( cmd_full_wizard ) || echo -e "${RED}Wizard failed or was aborted.${NC}" ;;
       8) ( cmd_update ) || echo -e "${RED}Operation failed or was aborted.${NC}" ;;
       9) ( cmd_install_windows_cert ) || echo -e "${RED}Operation failed or was aborted.${NC}" ;;
-      10|q|Q)
+      10) ( cmd_setup_windows_vm ) || echo -e "${RED}Operation failed or was aborted.${NC}" ;;
+      11|q|Q)
         echo "Goodbye!"
         exit 0
         ;;
       *)
-        echo -e "${RED}Invalid option. Please select 1-10.${NC}"
+        echo -e "${RED}Invalid option. Please select 1-11.${NC}"
         ;;
     esac
   done
@@ -3189,6 +3361,7 @@ case "${1:-}" in
   wizard)           cmd_full_wizard ;;
   update)           cmd_update ;;
   windows-cert)     cmd_install_windows_cert ;;
+  windows-setup)    cmd_setup_windows_vm ;;
   _cleanup)         cmd_system_cleanup ;;
   --version|-v)     echo "proxmox-lab.sh v${VERSION}" ;;
   "")               main_menu ;;
@@ -3207,6 +3380,7 @@ case "${1:-}" in
     echo "  wizard             Full setup wizard"
     echo "  update             Check for updates and self-patch"
     echo "  windows-cert       Install TLS cert on a Windows VM"
+    echo "  windows-setup      Push traffic scripts to a Windows VM and configure scheduled tasks"
     echo "  --version          Show version"
     echo ""
     echo "Run without arguments for the interactive menu."

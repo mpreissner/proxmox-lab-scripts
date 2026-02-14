@@ -31,7 +31,7 @@ $ErrorActionPreference = 'Stop'
 # Preflight
 # ---------------------------------------------------------------------------
 
-# Elevation check — Task Scheduler registration requires Administrator
+# Elevation check  -  Task Scheduler registration requires Administrator
 $principal = [Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()
 if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
     Write-Host "Error: This script must be run as Administrator." -ForegroundColor Red
@@ -56,7 +56,7 @@ $allTaskNames = @(
 )
 
 Write-Host ""
-Write-Host "Zscaler Lab — Scheduled Task Setup" -ForegroundColor Cyan
+Write-Host "Zscaler Lab  -  Scheduled Task Setup" -ForegroundColor Cyan
 Write-Host "Script: $ScriptPath" -ForegroundColor Gray
 Write-Host ""
 
@@ -77,7 +77,7 @@ $commonSettings = New-ScheduledTaskSettingsSet `
     -AllowStartIfOnBatteries `
     -ExecutionTimeLimit (New-TimeSpan -Hours 2)
 
-# Weekday trigger helper — reused by every task
+# Weekday trigger helper  -  reused by every task
 $weekdays = @("Monday","Tuesday","Wednesday","Thursday","Friday")
 
 function New-WeekdayTrigger {
@@ -86,7 +86,7 @@ function New-WeekdayTrigger {
 }
 
 # ---------------------------------------------------------------------------
-# Helper — builds the PowerShell action for a given profile + duration
+# Helper  -  builds the PowerShell action for a given profile + duration
 # ---------------------------------------------------------------------------
 
 function New-TrafficAction {
@@ -98,7 +98,7 @@ function New-TrafficAction {
 
 # ---------------------------------------------------------------------------
 # Task 1: Office Worker
-#   Every hour during business hours (8 AM – 6 PM), 55-minute runs
+#   Every hour during business hours (8 AM - 6 PM), 55-minute runs
 # ---------------------------------------------------------------------------
 
 Write-Host "Creating Office Worker task..." -ForegroundColor Green
@@ -112,11 +112,11 @@ Register-ScheduledTask `
     -RunLevel    Highest `
     -Description "Zscaler lab: office-worker traffic (M365, SaaS, personal browsing)" |
     Out-Null
-Write-Host "  office-worker: hourly 8 AM – 6 PM, 55-min runs" -ForegroundColor Gray
+Write-Host "  office-worker: hourly 8 AM - 6 PM, 55-min runs" -ForegroundColor Gray
 
 # ---------------------------------------------------------------------------
 # Task 2: Sales
-#   Every 2 hours during business hours (8:30 AM – 4:30 PM), 45-minute runs
+#   Every 2 hours during business hours (8:30 AM - 4:30 PM), 45-minute runs
 # ---------------------------------------------------------------------------
 
 Write-Host "Creating Sales task..." -ForegroundColor Green
@@ -136,7 +136,7 @@ Register-ScheduledTask `
     -RunLevel    Highest `
     -Description "Zscaler lab: sales traffic (CRM, LinkedIn, travel, GenAI)" |
     Out-Null
-Write-Host "  sales: 5x/day 8:30 AM – 4:30 PM, 45-min runs" -ForegroundColor Gray
+Write-Host "  sales: 5x/day 8:30 AM - 4:30 PM, 45-min runs" -ForegroundColor Gray
 
 # ---------------------------------------------------------------------------
 # Task 3: Developer
@@ -164,7 +164,7 @@ Write-Host "  developer: 5x/day including 8 PM, 45-min runs" -ForegroundColor Gr
 
 # ---------------------------------------------------------------------------
 # Task 4: Executive
-#   4x/day — the 10:30 PM run is the UEBA trigger (after-hours O365 access)
+#   4x/day  -  the 10:30 PM run is the UEBA trigger (after-hours O365 access)
 #   20-minute runs: light usage, quick check-ins
 # ---------------------------------------------------------------------------
 
@@ -188,7 +188,7 @@ Write-Host "  executive: 4x/day including 10:30 PM (UEBA), 20-min runs" -Foregro
 
 # ---------------------------------------------------------------------------
 # Task 5: Threat
-#   3x/day during business hours — AV, DLP, and policy violation events
+#   3x/day during business hours  -  AV, DLP, and policy violation events
 #   10-minute runs: each session runs through all test types once
 # ---------------------------------------------------------------------------
 
@@ -210,7 +210,7 @@ Register-ScheduledTask `
 Write-Host "  threat: 3x/day at 9:15 AM, 1:15 PM, 4:15 PM, 10-min runs" -ForegroundColor Gray
 
 # ---------------------------------------------------------------------------
-# Verify — query back what Task Scheduler actually registered
+# Verify  -  query back what Task Scheduler actually registered
 # ---------------------------------------------------------------------------
 
 Write-Host ""
@@ -235,7 +235,7 @@ Write-Host ""
 if ($missing -eq 0) {
     Write-Host "All $verified tasks registered successfully." -ForegroundColor Green
 } else {
-    Write-Host "$verified registered, $missing missing — check for errors above." -ForegroundColor Yellow
+    Write-Host "$verified registered, $missing missing  -  check for errors above." -ForegroundColor Yellow
 }
 
 # ---------------------------------------------------------------------------
