@@ -39,7 +39,7 @@ A single interactive menu covering the full lab lifecycle.
 5. **Stop Containers** — stop all running lab-managed containers
 6. **Show Status** — view all containers with running state and traffic gen status at a glance
 7. **Full Setup Wizard** — runs steps 1 → 2 → 3 → 4 in sequence
-8. **Update** — check GitHub for a newer version, show changelog, and self-patch the script in place
+8. **Update** — check GitHub for a newer version, show changelog, and self-patch the script in place (also runs automatically on every interactive launch)
 9. **Install Windows VM Certificate** — install a TLS inspection root CA on a Windows VM via QEMU guest agent
 10. **Setup Windows VM Traffic Generator** — push `win-traffic.ps1` and `setup-scheduled-tasks.ps1` to a Windows VM and register scheduled tasks
 11. **Exit**

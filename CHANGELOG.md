@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.4.0] - 2026-02-14
+
+### Added
+- **Startup version check:** on every interactive launch, queries the GitHub releases API before showing the main menu. If a newer release is available, displays the version banner and changelog for that release, then prompts `Update now? [y/N]:`. Accepting downloads and applies the update, then exits so the user relaunches the new version. Declining proceeds to the main menu. Uses a 5-second timeout; fails silently if GitHub is unreachable. Direct CLI invocations (`deploy`, `start`, `update`, etc.) are unaffected.
+- **Config migration routine (`_migrate_config`):** runs at startup before any command. If `SAVED_VERSION` in `~/.proxmox-lab.conf` is older than the running script version, applies pending migration steps and updates `SAVED_VERSION`. Current migration (v2.2.x → v2.3.0): removes stale `HQ_START`/`BRANCH_START` keys and notifies the user if `HQ_RANGE`/`BRANCH_RANGE` are also unset. Silent if no migration is needed.
+- `SAVED_VERSION` written to `~/.proxmox-lab.conf` by `save_config()`, recording the version that last wrote the config.
+
+### Changed
+- `cmd_update()` accepts an optional `skip_confirm` flag (used internally by the startup version check to avoid double-prompting). Behavior when invoked from menu option 8 or CLI is unchanged.
+
+---
+
 ## [2.3.0] - 2026-02-14
 
 ### Added
