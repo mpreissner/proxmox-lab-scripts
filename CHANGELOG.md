@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.5.1] - 2026-02-14
+
+### Added
+- Shared storage recommendation during template creation: if local storage is chosen in a multi-node cluster and shared storage pools are available on the selected node, prompts the user to switch. Supports both single-node and multi-node shared storage deployments.
+- Pre-deploy shared storage validation: when the template is on shared storage, verifies that the storage pool is accessible on every target node before any cloning begins. Aborts with a clear error if any node is missing the pool.
+
+### Fixed
+- Removed incorrect "Note: This script only supports local storage options" warning from template creation. Shared storage is fully supported.
+
+---
+
 ## [2.5.0] - 2026-02-14
 
 ### Added

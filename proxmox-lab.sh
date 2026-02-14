@@ -13,7 +13,7 @@ YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 CYAN='\033[0;36m'
 NC='\033[0m'
-VERSION="2.5.0"
+VERSION="2.5.1"
 
 CONFIG_FILE="${HOME}/.proxmox-lab.conf"
 if [ -f "$CONFIG_FILE" ]; then
@@ -416,7 +416,6 @@ raise SystemExit(1)
 cmd_create_template() {
   _load_config
   section_header "Alpine LXC Template Creator"
-  echo -e "${YELLOW}Note: This script only supports local storage options${NC}"
   echo ""
 
   # 1. Template ID
@@ -454,6 +453,36 @@ cmd_create_template() {
   echo ""
   echo -e "${BLUE}3. Storage Configuration${NC}"
   pick_storage "$NODE"
+
+  # Recommend shared storage if local was chosen in a multi-node cluster
+  _tmpl_is_shared=$(pvesh get /storage/"$STORAGE" --output-format json 2>/dev/null | \
+    python3 -c "
+import sys,json
+try: print('1' if json.load(sys.stdin).get('shared') else '0')
+except: print('0')
+" 2>/dev/null || echo "0")
+  if [ "$_tmpl_is_shared" = "0" ]; then
+    _cluster_size=$(pvesh get /nodes --output-format json 2>/dev/null | \
+      python3 -c "import sys,json; print(len(json.load(sys.stdin)))" 2>/dev/null || echo "1")
+    _shared_pools=$(pvesh get /nodes/"$NODE"/storage --output-format json 2>/dev/null | \
+      python3 -c "
+import sys,json
+pools=[p['storage'] for p in json.load(sys.stdin) if p.get('shared')]
+print(' '.join(pools))
+" 2>/dev/null || echo "")
+    if [ "$_cluster_size" -gt 1 ] && [ -n "$_shared_pools" ]; then
+      echo ""
+      echo -e "${YELLOW}  Tip: You selected local storage in a multi-node cluster.${NC}"
+      echo -e "${YELLOW}  Placing the template on shared storage enables linked clones${NC}"
+      echo -e "${YELLOW}  across all nodes for faster deployment.${NC}"
+      echo "  Available shared pools: ${_shared_pools}"
+      echo ""
+      read -p "  Switch to shared storage? [y/N]: " _switch
+      if [[ "$_switch" =~ ^[Yy]$ ]]; then
+        pick_storage "$NODE"
+      fi
+    fi
+  fi
 
   # 4. Alpine Version
   echo ""
@@ -1037,6 +1066,37 @@ import sys,json
 try: print('1' if json.load(sys.stdin).get('shared') else '0')
 except: print('0')
 " 2>/dev/null || echo "0")
+
+  # If using shared storage, verify it's accessible on all target nodes before deploying
+  if [ "$TMPL_SHARED" = "1" ]; then
+    echo "Verifying shared storage '${TMPL_POOL}' on all target nodes..."
+    _storage_ok=true
+    _checked_nodes=""
+    for entry in "${DEPLOY_LIST[@]}"; do
+      read -r _vctid _ _ _ _ _ <<< "$entry"
+      _vnode="${CTID_NODES[$_vctid]}"
+      [[ " $_checked_nodes " == *" $_vnode "* ]] && continue
+      _checked_nodes="$_checked_nodes $_vnode"
+      if pvesh get /nodes/"$_vnode"/storage --output-format json 2>/dev/null | \
+         python3 -c "
+import sys,json
+pools=[p['storage'] for p in json.load(sys.stdin)]
+exit(0 if '${TMPL_POOL}' in pools else 1)
+" 2>/dev/null; then
+        echo -e "  ${GREEN}✓ ${_vnode}: ${TMPL_POOL} available${NC}"
+      else
+        echo -e "  ${RED}✗ ${_vnode}: ${TMPL_POOL} not found${NC}"
+        _storage_ok=false
+      fi
+    done
+    if ! $_storage_ok; then
+      echo ""
+      echo -e "${RED}Error: Shared storage '${TMPL_POOL}' is not available on all target nodes.${NC}"
+      echo "Ensure the storage is mounted and active on each node before deploying."
+      return 1
+    fi
+    echo ""
+  fi
 
   # Deploy containers
   echo ""
