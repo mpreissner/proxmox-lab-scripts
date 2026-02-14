@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.6.6] - 2026-02-14
+
+### Fixed
+- Startup version check update path installed the wrong version. `_startup_version_check` discovered the target version via the GitHub releases API, but then delegated to `cmd_update` which always downloaded from the main branch raw URL. GitHub's CDN can serve a stale version of the main branch for a short time after a push, causing the installed script to report the previous version number. `_startup_version_check` now passes the target version to `cmd_update`, which downloads from the immutable tag ref (`/v{version}/proxmox-lab.sh`) instead of `/main/`. The interactive update path (menu option 10) is unchanged and continues to download from main.
+
+---
+
 ## [2.6.5] - 2026-02-14
 
 ### Fixed
