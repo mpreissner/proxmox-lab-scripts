@@ -13,7 +13,7 @@ YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 CYAN='\033[0;36m'
 NC='\033[0m'
-VERSION="2.5.2"
+VERSION="2.6.0"
 
 CONFIG_FILE="${HOME}/.proxmox-lab.conf"
 if [ -f "$CONFIG_FILE" ]; then
@@ -81,6 +81,7 @@ SAVED_VERSION="${VERSION}"
 NODES="${NODES:-}"
 BRIDGE="${BRIDGE:-vmbr0}"
 STORAGE="${STORAGE:-local-lvm}"
+IMAGE_STORAGE="${IMAGE_STORAGE:-local}"
 VLAN_HQ="${VLAN_HQ:-}"
 VLAN_BRANCH="${VLAN_BRANCH:-}"
 HQ_RANGE="${HQ_RANGE:-}"
@@ -168,6 +169,33 @@ for p in json.load(sys.stdin):
   STORAGE="${input:-${STORAGE:-local-zfs}}"
   while [ -z "$STORAGE" ]; do
     read -p "Storage pool name: " STORAGE
+  done
+}
+
+# Prompt for IMAGE_STORAGE — the pool where the Alpine .tar.xz template image
+# will be downloaded. Must have the 'vztmpl' content type enabled.
+pick_image_storage() {
+  local target_node="${1:-$(get_local_node)}"
+
+  if [ -n "${IMAGE_STORAGE:-}" ]; then
+    echo "  Using saved image storage: ${IMAGE_STORAGE}"
+    read -p "  Change image storage? [y/N]: " chg
+    [[ "$chg" =~ ^[Yy]$ ]] || return 0
+  fi
+
+  echo "Storage pools with 'vztmpl' content type on ${target_node}:"
+  pvesh get /nodes/"$target_node"/storage --output-format json 2>/dev/null | python3 -c "
+import sys,json
+for p in json.load(sys.stdin):
+    if 'vztmpl' in (p.get('content') or ''):
+        shared = '(shared)' if p.get('shared') else '(local) '
+        print(f'  {p[\"storage\"]:20s} {p[\"type\"]:12s} {shared}')
+" 2>/dev/null || echo "  (unable to list storage)"
+
+  read -p "Image storage pool [${IMAGE_STORAGE:-local}]: " input
+  IMAGE_STORAGE="${input:-${IMAGE_STORAGE:-local}}"
+  while [ -z "$IMAGE_STORAGE" ]; do
+    read -p "Image storage pool: " IMAGE_STORAGE
   done
 }
 
@@ -499,6 +527,12 @@ print(' '.join(pools))
     fi
   fi
 
+  # 3b. Image Storage (where the Alpine .tar.xz will be downloaded)
+  echo ""
+  echo -e "${BLUE}3b. Image Storage${NC}"
+  echo "Storage pool for downloading the Alpine template image (must support 'vztmpl')."
+  pick_image_storage "$NODE"
+
   # 4. Alpine Version
   echo ""
   echo -e "${BLUE}4. Alpine Version${NC}"
@@ -544,7 +578,8 @@ print(' '.join(pools))
   section_header "Configuration Summary"
   echo "Template ID:    ${TEMPLATE_ID}"
   echo "Node:           ${NODE}"
-  echo "Storage:        ${STORAGE} (local)"
+  echo "CT Disk Storage: ${STORAGE}"
+  echo "Image Storage:   ${IMAGE_STORAGE:-local}"
   echo "Alpine:         ${ALPINE_TEMPLATE}"
   echo "Memory:         ${MEMORY} MB"
   echo "CPU Cores:      ${CORES}"
@@ -567,17 +602,17 @@ print(' '.join(pools))
 
   echo "Downloading Alpine template to ${NODE} if needed..."
   run_on_node "$NODE" pveam update 2>/dev/null || true
-  run_on_node "$NODE" pveam download local "${ALPINE_TEMPLATE}" 2>/dev/null || true
+  run_on_node "$NODE" pveam download "${IMAGE_STORAGE}" "${ALPINE_TEMPLATE}" 2>/dev/null || true
 
-  if ! run_on_node "$NODE" pveam list local | grep -q "${ALPINE_TEMPLATE}"; then
-    echo -e "${RED}Error: Template ${ALPINE_TEMPLATE} not found in local storage on ${NODE}${NC}"
+  if ! run_on_node "$NODE" pveam list "${IMAGE_STORAGE}" | grep -q "${ALPINE_TEMPLATE}"; then
+    echo -e "${RED}Error: Template ${ALPINE_TEMPLATE} not found in ${IMAGE_STORAGE} on ${NODE}${NC}"
     echo "Available templates:"
-    run_on_node "$NODE" pveam list local
+    run_on_node "$NODE" pveam list "${IMAGE_STORAGE}"
     return 1
   fi
 
   echo "Creating base container on ${NODE}..."
-  run_on_node "$NODE" pct create $TEMPLATE_ID local:vztmpl/${ALPINE_TEMPLATE} \
+  run_on_node "$NODE" pct create $TEMPLATE_ID ${IMAGE_STORAGE}:vztmpl/${ALPINE_TEMPLATE} \
     --hostname alpine-template \
     --memory $MEMORY \
     --cores $CORES \
@@ -3254,16 +3289,17 @@ cmd_system_cleanup() {
     [ -n "$TEMPLATE_NODE" ] && TEMPLATE_CTID="$TEMPLATE_ID"
   fi
 
-  # Alpine images — check every cluster node
+  # Alpine images — check every cluster node via pveam
+  local _img_store="${IMAGE_STORAGE:-local}"
   declare -a ALPINE_IMAGE_NODES=() ALPINE_IMAGE_PATHS=()
   local _nodes _node
   _nodes=$(get_cluster_nodes 2>/dev/null)
   [ -z "$_nodes" ] && _nodes=$(get_local_node)
   for _node in $_nodes; do
-    while IFS= read -r _f; do
-      [ -n "$_f" ] && { ALPINE_IMAGE_NODES+=("$_node"); ALPINE_IMAGE_PATHS+=("$_f"); }
-    done < <(run_on_node "$_node" sh -c \
-      'ls /var/lib/vz/template/cache/alpine-*.tar.xz 2>/dev/null' 2>/dev/null)
+    while IFS= read -r _tmpl; do
+      [ -n "$_tmpl" ] && { ALPINE_IMAGE_NODES+=("$_node"); ALPINE_IMAGE_PATHS+=("$_tmpl"); }
+    done < <(run_on_node "$_node" pveam list "${_img_store}" 2>/dev/null | \
+      awk '/^alpine-.*\.tar\.xz/{print $1}' 2>/dev/null)
   done
 
   if [ ${#LAB_CTIDS[@]} -eq 0 ] && [ -z "$TEMPLATE_CTID" ] && [ ${#ALPINE_IMAGE_PATHS[@]} -eq 0 ]; then
@@ -3287,9 +3323,9 @@ cmd_system_cleanup() {
   fi
   if [ ${#ALPINE_IMAGE_PATHS[@]} -gt 0 ]; then
     echo ""
-    echo "Alpine template images:"
+    echo "Alpine template images (${_img_store}):"
     for i in "${!ALPINE_IMAGE_PATHS[@]}"; do
-      echo "  $(basename ${ALPINE_IMAGE_PATHS[$i]}) (on ${ALPINE_IMAGE_NODES[$i]})"
+      echo "  ${ALPINE_IMAGE_PATHS[$i]} (on ${ALPINE_IMAGE_NODES[$i]})"
     done
   fi
 
@@ -3364,11 +3400,11 @@ cmd_system_cleanup() {
     echo "Removing Alpine template images..."
     for i in "${!ALPINE_IMAGE_PATHS[@]}"; do
       _node="${ALPINE_IMAGE_NODES[$i]}"
-      _path="${ALPINE_IMAGE_PATHS[$i]}"
-      if run_on_node "$_node" rm -f "$_path"; then
-        echo -e "${GREEN}✓ Removed $(basename $_path) from ${_node}${NC}"
+      _tmpl="${ALPINE_IMAGE_PATHS[$i]}"
+      if run_on_node "$_node" pveam remove "${_img_store}" "${_tmpl}" 2>/dev/null; then
+        echo -e "${GREEN}✓ Removed ${_tmpl} from ${_node}${NC}"
       else
-        echo -e "${RED}✗ Failed to remove $(basename $_path) from ${_node}${NC}"
+        echo -e "${RED}✗ Failed to remove ${_tmpl} from ${_node}${NC}"
       fi
     done
   fi

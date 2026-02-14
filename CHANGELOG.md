@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.6.0] - 2026-02-14
+
+### Added
+- `IMAGE_STORAGE` config variable: the storage pool where the Alpine `.tar.xz` template image is downloaded. Prompted during template creation (step 3b) with the list filtered to pools that have the `vztmpl` content type enabled. Saved to `~/.proxmox-lab.conf` and pre-populated on subsequent runs. Defaults to `local` when not set, preserving existing behavior for users upgrading.
+
+### Fixed
+- Template creation no longer hardcodes `local` for the Alpine image download (`pveam download`), existence check (`pveam list`), or container creation (`pct create … local:vztmpl/…`). All three now use the configured `IMAGE_STORAGE`.
+- System cleanup (`_cleanup`) now discovers Alpine images via `pveam list <IMAGE_STORAGE>` instead of scanning `/var/lib/vz/template/cache/` directly, and removes them via `pveam remove` instead of `rm -f`. This correctly handles non-`local` image storage pools.
+- Summary display during template creation now shows `CT Disk Storage` and `Image Storage` as separate labeled fields.
+
+---
+
 ## [2.5.2] - 2026-02-14
 
 ### Fixed
