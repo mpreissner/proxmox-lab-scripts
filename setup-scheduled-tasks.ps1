@@ -1,5 +1,4 @@
 #Requires -Version 5.1
-$SCRIPT_VERSION = "3.0.0"
 <#
 .SYNOPSIS
     Creates Windows Task Scheduler entries for the Zscaler lab traffic generator.
@@ -31,6 +30,14 @@ param(
     [string]$ScriptPath = "C:\ProgramData\proxmox-lab\win-traffic.ps1",
     [string[]]$Profiles = @("office-worker", "sales", "developer", "executive", "threat")
 )
+
+$SCRIPT_VERSION = "3.0.2"
+
+# Normalize: qm guest exec passes -Profiles as a single comma-separated string;
+# split it into a proper array so -contains checks work correctly.
+if ($Profiles.Count -eq 1 -and $Profiles[0] -match ',') {
+    $Profiles = $Profiles[0] -split ','
+}
 
 $ErrorActionPreference = 'Stop'
 

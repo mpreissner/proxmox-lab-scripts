@@ -13,7 +13,7 @@ YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 CYAN='\033[0;36m'
 NC='\033[0m'
-VERSION="3.0.0"
+VERSION="3.0.2"
 
 CONFIG_FILE="${HOME}/.proxmox-lab.conf"
 if [ -f "$CONFIG_FILE" ]; then
@@ -3467,13 +3467,13 @@ _win_vm_write_file() {
       run_on_node "$node" qm guest exec --synchronous 1 "$vmid" -- \
         powershell.exe -ExecutionPolicy Bypass -NonInteractive -Command \
         "[System.IO.File]::WriteAllBytes('${win_path}',[Convert]::FromBase64String('${chunk}'))" \
-        2>/dev/null
+        >/dev/null 2>&1
       first=false
     else
       run_on_node "$node" qm guest exec --synchronous 1 "$vmid" -- \
         powershell.exe -ExecutionPolicy Bypass -NonInteractive -Command \
         "\$b=[Convert]::FromBase64String('${chunk}');\$f=[System.IO.File]::Open('${win_path}',[System.IO.FileMode]::Append);\$f.Write(\$b,0,\$b.Length);\$f.Dispose()" \
-        2>/dev/null
+        >/dev/null 2>&1
     fi
   done
 }
@@ -3511,7 +3511,7 @@ _win_script_version() {
   local node="$1" vmid="$2" win_path="$3"
   local result
   result=$(_win_exec_ps_capture "$node" "$vmid" \
-    "try { (Select-String -Path '${win_path}' -Pattern '^\\\$SCRIPT_VERSION').Line -replace '.*\"(.*)\".*','\$1' } catch { Write-Output 'none' }")
+    "try { \$v=(Get-Content '${win_path}' -ErrorAction Stop | Where-Object { \$_ -like '*SCRIPT_VERSION*' } | Select-Object -First 1); if (\$v) { (\$v -split '\"')[1] } else { Write-Output 'none' } } catch { Write-Output 'none' }")
   echo "${result:-none}"
 }
 
@@ -3536,7 +3536,7 @@ _select_win_vms() {
 
   echo ""
   echo "Windows VMs tagged 'lab-windows':"
-  printf "  %-4s %-8s %-24s %-16s %s\n" "#" "VMID" "Name" "Node" "Status"
+  printf "  %-8s %-24s %-16s %s\n" "VMID" "Name" "Node" "Status"
   echo "  -------------------------------------------------------"
   local i
   for i in "${!vmids[@]}"; do
@@ -3546,22 +3546,29 @@ _select_win_vms() {
     else
       status_colored="${YELLOW}${statuses[$i]}${NC}"
     fi
-    printf "  %-4s %-8s %-24s %-16s " "$((i+1))" "${vmids[$i]}" "${names[$i]}" "${nodes[$i]}"
+    printf "  %-8s %-24s %-16s " "${vmids[$i]}" "${names[$i]}" "${nodes[$i]}"
     echo -e "$status_colored"
   done
   echo ""
 
-  read -p "  Select VMs (numbers/comma-separated, or 'all') [all]: " _sel
+  read -p "  Enter VMIDs to target (comma-separated, or 'all') [all]: " _sel
   _sel="${_sel:-all}"
 
   if [[ "$_sel" == "all" ]]; then
     _SELECTED_WIN_VMIDS=("${vmids[@]}")
   else
     for token in $(echo "$_sel" | tr ',' ' '); do
-      if [[ "$token" =~ ^[0-9]+$ ]] && [ "$token" -ge 1 ] && [ "$token" -le "${#vmids[@]}" ]; then
-        _SELECTED_WIN_VMIDS+=("${vmids[$((token-1))]}")
-      else
-        echo -e "${YELLOW}  Skipping invalid selection: ${token}${NC}"
+      local _found=false
+      local j
+      for j in "${!vmids[@]}"; do
+        if [[ "${vmids[$j]}" == "$token" ]]; then
+          _SELECTED_WIN_VMIDS+=("$token")
+          _found=true
+          break
+        fi
+      done
+      if ! $_found; then
+        echo -e "${YELLOW}  Skipping unknown VMID: ${token}${NC}"
       fi
     done
   fi
@@ -3609,10 +3616,8 @@ cmd_tag_windows_vms() {
 
   echo ""
   echo "All VMs/Containers on cluster:"
-  printf "  %-4s %-8s %-24s %-16s %-12s %s\n" "#" "VMID" "Name" "Node" "Status" "Tags"
+  printf "  %-8s %-24s %-16s %-12s %s\n" "VMID" "Name" "Node" "Status" "Tags"
   echo "  -----------------------------------------------------------------------"
-  local display_idx=1
-  local idx_map=()
   for i in "${sorted_indices[@]}"; do
     local marker=""
     local tag="${tags_list[$i]}"
@@ -3621,53 +3626,72 @@ cmd_tag_windows_vms() {
     elif echo "${names[$i]}" | grep -qi 'win'; then
       marker=" *"
     fi
-    printf "  %-4s %-8s %-24s %-16s %-12s %s\n" \
-      "${display_idx}" "${vmids[$i]}" "${names[$i]}" "${nodes[$i]}" "${statuses[$i]}" "${tag}${marker}"
-    idx_map+=("$i")
-    display_idx=$((display_idx + 1))
+    printf "  %-8s %-24s %-16s %-12s %s\n" \
+      "${vmids[$i]}" "${names[$i]}" "${nodes[$i]}" "${statuses[$i]}" "${tag}${marker}"
   done
   echo ""
   echo "  (* = name contains 'win', candidate for tagging)"
   echo ""
 
-  read -p "  Select VMs to tag (numbers/comma-separated, or 'all'): " _sel
+  read -p "  Enter VMIDs to tag (comma-separated, or 'all'): " _sel
   if [ -z "$_sel" ]; then
     echo "  No selection made."
     return 0
   fi
 
-  local selected_indices=()
+  local selected_vmids=()
   if [[ "$_sel" == "all" ]]; then
-    selected_indices=("${idx_map[@]}")
+    for i in "${sorted_indices[@]}"; do
+      selected_vmids+=("${vmids[$i]}")
+    done
   else
     for token in $(echo "$_sel" | tr ',' ' '); do
-      if [[ "$token" =~ ^[0-9]+$ ]] && [ "$token" -ge 1 ] && [ "$token" -le "${#idx_map[@]}" ]; then
-        selected_indices+=("${idx_map[$((token-1))]}")
-      else
-        echo -e "${YELLOW}  Skipping invalid selection: ${token}${NC}"
+      local _found=false
+      local j
+      for j in "${!vmids[@]}"; do
+        if [[ "${vmids[$j]}" == "$token" ]]; then
+          selected_vmids+=("$token")
+          _found=true
+          break
+        fi
+      done
+      if ! $_found; then
+        echo -e "${YELLOW}  Skipping unknown VMID: ${token}${NC}"
       fi
     done
   fi
 
-  if [ ${#selected_indices[@]} -eq 0 ]; then
-    echo -e "${RED}  No valid VMs selected.${NC}"
+  if [ ${#selected_vmids[@]} -eq 0 ]; then
+    echo -e "${RED}  No valid VMIDs selected.${NC}"
     return 1
   fi
 
   echo ""
-  for i in "${selected_indices[@]}"; do
-    local vmid="${vmids[$i]}"
-    local node="${nodes[$i]}"
-    local existing="${tags_list[$i]}"
+  for target_vmid in "${selected_vmids[@]}"; do
+    # Find array index for this vmid
+    local _idx=""
+    local j
+    for j in "${!vmids[@]}"; do
+      if [[ "${vmids[$j]}" == "$target_vmid" ]]; then
+        _idx="$j"
+        break
+      fi
+    done
+    if [ -z "$_idx" ]; then
+      echo -e "  ${RED}VM ${target_vmid}: not found — skipping${NC}"
+      continue
+    fi
+    local node="${nodes[$_idx]}"
+    local existing="${tags_list[$_idx]}"
     if [[ ";${existing};" == *";lab-windows;"* ]] || [[ "$existing" == "lab-windows" ]]; then
-      echo -e "  ${CYAN}VM ${vmid} (${names[$i]}): already tagged lab-windows — skipping${NC}"
+      echo -e "  ${CYAN}VM ${target_vmid} (${names[$_idx]}): already tagged lab-windows — skipping${NC}"
     else
       local new_tags="${existing:+${existing};}lab-windows"
-      echo "  Tagging VM ${vmid} (${names[$i]}) on ${node}..."
-      if run_on_node "$node" qm set "$vmid" --tags "$new_tags" 2>/dev/null; then
-        echo -e "  ${GREEN}✓ VM ${vmid} tagged: ${new_tags}${NC}"
+      echo "  Tagging VM ${target_vmid} (${names[$_idx]}) on ${node}..."
+      if run_on_node "$node" qm set "$target_vmid" --tags "$new_tags" 2>/dev/null; then
+        echo -e "  ${GREEN}✓ VM ${target_vmid} tagged: ${new_tags}${NC}"
       else
-        echo -e "  ${RED}✗ Failed to tag VM ${vmid}${NC}"
+        echo -e "  ${RED}✗ Failed to tag VM ${target_vmid}${NC}"
       fi
     fi
   done
@@ -3744,10 +3768,12 @@ cmd_windows_install_cert() {
     run_on_node "$_vm_node" qm guest exec "$vmid" -- \
       powershell.exe -ExecutionPolicy Bypass -NonInteractive -Command \
       "\$cert = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2('${WIN_TEMP_PATH}'); \$store = New-Object System.Security.Cryptography.X509Certificates.X509Store('Root','LocalMachine'); \$store.Open('ReadWrite'); \$store.Add(\$cert); \$store.Close()" \
-      2>/dev/null
+      >/dev/null 2>&1
 
     run_on_node "$_vm_node" qm guest exec "$vmid" -- \
-      cmd.exe /c "del \"${WIN_TEMP_PATH}\"" 2>/dev/null || true
+      powershell.exe -ExecutionPolicy Bypass -NonInteractive -Command \
+      "Remove-Item -Path '${WIN_TEMP_PATH}' -Force -ErrorAction SilentlyContinue" \
+      >/dev/null 2>&1 || true
 
     echo -e "  ${GREEN}  ✓ Certificate installed${NC}"
   done
@@ -3899,22 +3925,43 @@ cmd_windows_configure_tasks() {
       continue
     fi
 
-    echo "  Creating ${WIN_DEST_DIR}..."
     run_on_node "$_vm_node" qm guest exec "$vmid" -- \
       powershell.exe -ExecutionPolicy Bypass -NonInteractive -Command \
       "New-Item -ItemType Directory -Force -Path 'C:\ProgramData\proxmox-lab' | Out-Null" \
-      2>/dev/null
+      >/dev/null 2>&1
 
-    echo "  Copying setup-scheduled-tasks.ps1..."
-    _win_vm_write_file "$_vm_node" "$vmid" "$WIN_SETUP_PS1" 'C:\ProgramData\proxmox-lab\setup-scheduled-tasks.ps1'
+    local remote_ver
+    remote_ver=$(_win_script_version "$_vm_node" "$vmid" 'C:\ProgramData\proxmox-lab\setup-scheduled-tasks.ps1')
+
+    if [ -n "$local_ver" ] && [ "$remote_ver" = "$local_ver" ]; then
+      echo -e "  ${CYAN}  Script already up to date (v${local_ver}) — skipping copy${NC}"
+    else
+      echo "  Copying setup-scheduled-tasks.ps1..."
+      _win_vm_write_file "$_vm_node" "$vmid" "$WIN_SETUP_PS1" 'C:\ProgramData\proxmox-lab\setup-scheduled-tasks.ps1'
+    fi
 
     echo "  Running setup-scheduled-tasks.ps1 -Profiles ${PROFILE_ARG}..."
-    run_on_node "$_vm_node" qm guest exec "$vmid" -- \
+    local _ps_out
+    _ps_out=$(run_on_node "$_vm_node" qm guest exec --synchronous 1 "$vmid" -- \
       powershell.exe -ExecutionPolicy Bypass -NonInteractive \
       -File 'C:\ProgramData\proxmox-lab\setup-scheduled-tasks.ps1' \
-      -Profiles "$PROFILE_ARG" 2>/dev/null
-
-    echo -e "  ${GREEN}  ✓ Scheduled tasks configured (profiles: ${PROFILE_ARG})${NC}"
+      -Profiles "$PROFILE_ARG" 2>/dev/null | \
+      python3 -c "
+import sys, json
+try:
+    d = json.load(sys.stdin)
+    print(d.get('out-data','').strip())
+except:
+    pass
+" 2>/dev/null)
+    if [ -n "$_ps_out" ]; then
+      echo "$_ps_out" | sed 's/^/    /'
+    fi
+    if echo "$_ps_out" | grep -q "registered successfully"; then
+      echo -e "  ${GREEN}  ✓ Scheduled tasks configured (profiles: ${PROFILE_ARG})${NC}"
+    else
+      echo -e "  ${YELLOW}  Warning: check output above${NC}"
+    fi
   done
 
   echo ""
