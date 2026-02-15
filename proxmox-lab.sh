@@ -13,7 +13,7 @@ YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 CYAN='\033[0;36m'
 NC='\033[0m'
-VERSION="3.0.2"
+VERSION="3.0.3"
 
 CONFIG_FILE="${HOME}/.proxmox-lab.conf"
 if [ -f "$CONFIG_FILE" ]; then
@@ -3941,26 +3941,31 @@ cmd_windows_configure_tasks() {
     fi
 
     echo "  Running setup-scheduled-tasks.ps1 -Profiles ${PROFILE_ARG}..."
-    local _ps_out
-    _ps_out=$(run_on_node "$_vm_node" qm guest exec --synchronous 1 "$vmid" -- \
+    run_on_node "$_vm_node" qm guest exec --synchronous 1 "$vmid" -- \
       powershell.exe -ExecutionPolicy Bypass -NonInteractive \
       -File 'C:\ProgramData\proxmox-lab\setup-scheduled-tasks.ps1' \
-      -Profiles "$PROFILE_ARG" 2>/dev/null | \
-      python3 -c "
-import sys, json
-try:
-    d = json.load(sys.stdin)
-    print(d.get('out-data','').strip())
-except:
-    pass
-" 2>/dev/null)
-    if [ -n "$_ps_out" ]; then
-      echo "$_ps_out" | sed 's/^/    /'
+      -Profiles "$PROFILE_ARG" >/dev/null 2>&1 || true
+
+    # setup-scheduled-tasks.ps1 uses Write-Host throughout (host stream, not stdout),
+    # so qm guest exec out-data is always empty — verify success by querying Task Scheduler
+    local _first_task_suffix
+    case "${selected_profiles[0]}" in
+      office-worker) _first_task_suffix="OfficeWorker" ;;
+      sales)         _first_task_suffix="Sales"        ;;
+      developer)     _first_task_suffix="Developer"    ;;
+      executive)     _first_task_suffix="Executive"    ;;
+      threat)        _first_task_suffix="Threat"       ;;
+      *)             _first_task_suffix=""             ;;
+    esac
+    local _task_check=""
+    if [ -n "$_first_task_suffix" ]; then
+      _task_check=$(_win_exec_ps_capture "$_vm_node" "$vmid" \
+        "\$t=Get-ScheduledTask -TaskName 'ZscalerTrafficGen-${_first_task_suffix}' -ErrorAction SilentlyContinue; if (\$t) { Write-Output 'found' } else { Write-Output 'missing' }")
     fi
-    if echo "$_ps_out" | grep -q "registered successfully"; then
+    if [ "${_task_check}" = "found" ] || [ -z "$_first_task_suffix" ]; then
       echo -e "  ${GREEN}  ✓ Scheduled tasks configured (profiles: ${PROFILE_ARG})${NC}"
     else
-      echo -e "  ${YELLOW}  Warning: check output above${NC}"
+      echo -e "  ${YELLOW}  Warning: ZscalerTrafficGen-${_first_task_suffix} not found — check Task Scheduler${NC}"
     fi
   done
 
