@@ -1,4 +1,5 @@
 #Requires -Version 5.1
+$SCRIPT_VERSION = "3.0.0"
 <#
 .SYNOPSIS
     Creates Windows Task Scheduler entries for the Zscaler lab traffic generator.
@@ -17,12 +18,18 @@
     Full path to win-traffic.ps1 on this machine.
     Default: C:\ProgramData\proxmox-lab\win-traffic.ps1
 
+.PARAMETER Profiles
+    Array of profile names to install. Defaults to all five profiles.
+    Valid values: office-worker, sales, developer, executive, threat
+
 .EXAMPLE
     .\setup-scheduled-tasks.ps1
     .\setup-scheduled-tasks.ps1 -ScriptPath "D:\lab\win-traffic.ps1"
+    .\setup-scheduled-tasks.ps1 -Profiles "office-worker,developer"
 #>
 param(
-    [string]$ScriptPath = "C:\ProgramData\proxmox-lab\win-traffic.ps1"
+    [string]$ScriptPath = "C:\ProgramData\proxmox-lab\win-traffic.ps1",
+    [string[]]$Profiles = @("office-worker", "sales", "developer", "executive", "threat")
 )
 
 $ErrorActionPreference = 'Stop'
@@ -101,66 +108,78 @@ function New-TrafficAction {
 #   Every hour during business hours (8 AM - 6 PM), 55-minute runs
 # ---------------------------------------------------------------------------
 
-Write-Host "Creating Office Worker task..." -ForegroundColor Green
-$triggers = 8..17 | ForEach-Object { New-WeekdayTrigger -At "$($_):00" }
-Register-ScheduledTask `
-    -TaskName    "$TASK_PREFIX-OfficeWorker" `
-    -Action      (New-TrafficAction -Profile "office-worker" -DurationMinutes 55) `
-    -Trigger     $triggers `
-    -Settings    $commonSettings `
-    -User        "SYSTEM" `
-    -RunLevel    Highest `
-    -Description "Zscaler lab: office-worker traffic (M365, SaaS, personal browsing)" |
-    Out-Null
-Write-Host "  office-worker: hourly 8 AM - 6 PM, 55-min runs" -ForegroundColor Gray
+if ($Profiles -contains "office-worker") {
+    Write-Host "Creating Office Worker task..." -ForegroundColor Green
+    $triggers = 8..17 | ForEach-Object { New-WeekdayTrigger -At "$($_):00" }
+    Register-ScheduledTask `
+        -TaskName    "$TASK_PREFIX-OfficeWorker" `
+        -Action      (New-TrafficAction -Profile "office-worker" -DurationMinutes 55) `
+        -Trigger     $triggers `
+        -Settings    $commonSettings `
+        -User        "SYSTEM" `
+        -RunLevel    Highest `
+        -Description "Zscaler lab: office-worker traffic (M365, SaaS, personal browsing)" |
+        Out-Null
+    Write-Host "  office-worker: hourly 8 AM - 6 PM, 55-min runs" -ForegroundColor Gray
+} else {
+    Write-Host "Skipping Office Worker task (not in selected profiles)" -ForegroundColor Gray
+}
 
 # ---------------------------------------------------------------------------
 # Task 2: Sales
 #   Every 2 hours during business hours (8:30 AM - 4:30 PM), 45-minute runs
 # ---------------------------------------------------------------------------
 
-Write-Host "Creating Sales task..." -ForegroundColor Green
-$triggers = @(
-    New-WeekdayTrigger -At "8:30AM"
-    New-WeekdayTrigger -At "10:30AM"
-    New-WeekdayTrigger -At "12:30PM"
-    New-WeekdayTrigger -At "2:30PM"
-    New-WeekdayTrigger -At "4:30PM"
-)
-Register-ScheduledTask `
-    -TaskName    "$TASK_PREFIX-Sales" `
-    -Action      (New-TrafficAction -Profile "sales" -DurationMinutes 45) `
-    -Trigger     $triggers `
-    -Settings    $commonSettings `
-    -User        "SYSTEM" `
-    -RunLevel    Highest `
-    -Description "Zscaler lab: sales traffic (CRM, LinkedIn, travel, GenAI)" |
-    Out-Null
-Write-Host "  sales: 5x/day 8:30 AM - 4:30 PM, 45-min runs" -ForegroundColor Gray
+if ($Profiles -contains "sales") {
+    Write-Host "Creating Sales task..." -ForegroundColor Green
+    $triggers = @(
+        New-WeekdayTrigger -At "8:30AM"
+        New-WeekdayTrigger -At "10:30AM"
+        New-WeekdayTrigger -At "12:30PM"
+        New-WeekdayTrigger -At "2:30PM"
+        New-WeekdayTrigger -At "4:30PM"
+    )
+    Register-ScheduledTask `
+        -TaskName    "$TASK_PREFIX-Sales" `
+        -Action      (New-TrafficAction -Profile "sales" -DurationMinutes 45) `
+        -Trigger     $triggers `
+        -Settings    $commonSettings `
+        -User        "SYSTEM" `
+        -RunLevel    Highest `
+        -Description "Zscaler lab: sales traffic (CRM, LinkedIn, travel, GenAI)" |
+        Out-Null
+    Write-Host "  sales: 5x/day 8:30 AM - 4:30 PM, 45-min runs" -ForegroundColor Gray
+} else {
+    Write-Host "Skipping Sales task (not in selected profiles)" -ForegroundColor Gray
+}
 
 # ---------------------------------------------------------------------------
 # Task 3: Developer
 #   5x/day including one evening run (late coding), 45-minute runs
 # ---------------------------------------------------------------------------
 
-Write-Host "Creating Developer task..." -ForegroundColor Green
-$triggers = @(
-    New-WeekdayTrigger -At "9:00AM"
-    New-WeekdayTrigger -At "11:00AM"
-    New-WeekdayTrigger -At "2:00PM"
-    New-WeekdayTrigger -At "4:00PM"
-    New-WeekdayTrigger -At "8:00PM"
-)
-Register-ScheduledTask `
-    -TaskName    "$TASK_PREFIX-Developer" `
-    -Action      (New-TrafficAction -Profile "developer" -DurationMinutes 45) `
-    -Trigger     $triggers `
-    -Settings    $commonSettings `
-    -User        "SYSTEM" `
-    -RunLevel    Highest `
-    -Description "Zscaler lab: developer traffic (GitHub, registries, cloud consoles, GenAI)" |
-    Out-Null
-Write-Host "  developer: 5x/day including 8 PM, 45-min runs" -ForegroundColor Gray
+if ($Profiles -contains "developer") {
+    Write-Host "Creating Developer task..." -ForegroundColor Green
+    $triggers = @(
+        New-WeekdayTrigger -At "9:00AM"
+        New-WeekdayTrigger -At "11:00AM"
+        New-WeekdayTrigger -At "2:00PM"
+        New-WeekdayTrigger -At "4:00PM"
+        New-WeekdayTrigger -At "8:00PM"
+    )
+    Register-ScheduledTask `
+        -TaskName    "$TASK_PREFIX-Developer" `
+        -Action      (New-TrafficAction -Profile "developer" -DurationMinutes 45) `
+        -Trigger     $triggers `
+        -Settings    $commonSettings `
+        -User        "SYSTEM" `
+        -RunLevel    Highest `
+        -Description "Zscaler lab: developer traffic (GitHub, registries, cloud consoles, GenAI)" |
+        Out-Null
+    Write-Host "  developer: 5x/day including 8 PM, 45-min runs" -ForegroundColor Gray
+} else {
+    Write-Host "Skipping Developer task (not in selected profiles)" -ForegroundColor Gray
+}
 
 # ---------------------------------------------------------------------------
 # Task 4: Executive
@@ -168,23 +187,27 @@ Write-Host "  developer: 5x/day including 8 PM, 45-min runs" -ForegroundColor Gr
 #   20-minute runs: light usage, quick check-ins
 # ---------------------------------------------------------------------------
 
-Write-Host "Creating Executive task..." -ForegroundColor Green
-$triggers = @(
-    New-WeekdayTrigger -At "7:30AM"
-    New-WeekdayTrigger -At "10:00AM"
-    New-WeekdayTrigger -At "3:00PM"
-    New-WeekdayTrigger -At "10:30PM"   # UEBA: after-hours access
-)
-Register-ScheduledTask `
-    -TaskName    "$TASK_PREFIX-Executive" `
-    -Action      (New-TrafficAction -Profile "executive" -DurationMinutes 20) `
-    -Trigger     $triggers `
-    -Settings    $commonSettings `
-    -User        "SYSTEM" `
-    -RunLevel    Highest `
-    -Description "Zscaler lab: executive traffic (O365, business news, GenAI); 10:30 PM run triggers UEBA" |
-    Out-Null
-Write-Host "  executive: 4x/day including 10:30 PM (UEBA), 20-min runs" -ForegroundColor Gray
+if ($Profiles -contains "executive") {
+    Write-Host "Creating Executive task..." -ForegroundColor Green
+    $triggers = @(
+        New-WeekdayTrigger -At "7:30AM"
+        New-WeekdayTrigger -At "10:00AM"
+        New-WeekdayTrigger -At "3:00PM"
+        New-WeekdayTrigger -At "10:30PM"   # UEBA: after-hours access
+    )
+    Register-ScheduledTask `
+        -TaskName    "$TASK_PREFIX-Executive" `
+        -Action      (New-TrafficAction -Profile "executive" -DurationMinutes 20) `
+        -Trigger     $triggers `
+        -Settings    $commonSettings `
+        -User        "SYSTEM" `
+        -RunLevel    Highest `
+        -Description "Zscaler lab: executive traffic (O365, business news, GenAI); 10:30 PM run triggers UEBA" |
+        Out-Null
+    Write-Host "  executive: 4x/day including 10:30 PM (UEBA), 20-min runs" -ForegroundColor Gray
+} else {
+    Write-Host "Skipping Executive task (not in selected profiles)" -ForegroundColor Gray
+}
 
 # ---------------------------------------------------------------------------
 # Task 5: Threat
@@ -192,22 +215,26 @@ Write-Host "  executive: 4x/day including 10:30 PM (UEBA), 20-min runs" -Foregro
 #   10-minute runs: each session runs through all test types once
 # ---------------------------------------------------------------------------
 
-Write-Host "Creating Threat task..." -ForegroundColor Green
-$triggers = @(
-    New-WeekdayTrigger -At "9:15AM"
-    New-WeekdayTrigger -At "1:15PM"
-    New-WeekdayTrigger -At "4:15PM"
-)
-Register-ScheduledTask `
-    -TaskName    "$TASK_PREFIX-Threat" `
-    -Action      (New-TrafficAction -Profile "threat" -DurationMinutes 10) `
-    -Trigger     $triggers `
-    -Settings    $commonSettings `
-    -User        "SYSTEM" `
-    -RunLevel    Highest `
-    -Description "Zscaler lab: security test events (EICAR, DLP, policy violation)" |
-    Out-Null
-Write-Host "  threat: 3x/day at 9:15 AM, 1:15 PM, 4:15 PM, 10-min runs" -ForegroundColor Gray
+if ($Profiles -contains "threat") {
+    Write-Host "Creating Threat task..." -ForegroundColor Green
+    $triggers = @(
+        New-WeekdayTrigger -At "9:15AM"
+        New-WeekdayTrigger -At "1:15PM"
+        New-WeekdayTrigger -At "4:15PM"
+    )
+    Register-ScheduledTask `
+        -TaskName    "$TASK_PREFIX-Threat" `
+        -Action      (New-TrafficAction -Profile "threat" -DurationMinutes 10) `
+        -Trigger     $triggers `
+        -Settings    $commonSettings `
+        -User        "SYSTEM" `
+        -RunLevel    Highest `
+        -Description "Zscaler lab: security test events (EICAR, DLP, policy violation)" |
+        Out-Null
+    Write-Host "  threat: 3x/day at 9:15 AM, 1:15 PM, 4:15 PM, 10-min runs" -ForegroundColor Gray
+} else {
+    Write-Host "Skipping Threat task (not in selected profiles)" -ForegroundColor Gray
+}
 
 # ---------------------------------------------------------------------------
 # Verify  -  query back what Task Scheduler actually registered
@@ -232,10 +259,18 @@ foreach ($name in $allTaskNames) {
 }
 
 Write-Host ""
+$skipped = $allTaskNames.Count - $Profiles.Count
 if ($missing -eq 0) {
-    Write-Host "All $verified tasks registered successfully." -ForegroundColor Green
+    Write-Host "$verified task(s) registered successfully." -ForegroundColor Green
 } else {
     Write-Host "$verified registered, $missing missing  -  check for errors above." -ForegroundColor Yellow
+}
+if ($Profiles.Count -lt $allTaskNames.Count) {
+    $skippedProfiles = $allTaskNames | Where-Object {
+        $name = $_
+        -not ($Profiles | Where-Object { $name -like "*$_*" })
+    }
+    Write-Host "Profiles not installed: $($skippedProfiles -join ', ')" -ForegroundColor Gray
 }
 
 # ---------------------------------------------------------------------------

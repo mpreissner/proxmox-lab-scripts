@@ -13,7 +13,7 @@ YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 CYAN='\033[0;36m'
 NC='\033[0m'
-VERSION="2.6.6"
+VERSION="3.0.0"
 
 CONFIG_FILE="${HOME}/.proxmox-lab.conf"
 if [ -f "$CONFIG_FILE" ]; then
@@ -93,7 +93,6 @@ CRON_SERVER="${CRON_SERVER:-*/15 * * * *}"
 CRON_OFFICE="${CRON_OFFICE:-*/5 8-18 * * 1-5}"
 CRON_SECURITY="${CRON_SECURITY:-*/30 * * * *}"
 CERT_PATH="${CERT_PATH:-}"
-WIN_VMID="${WIN_VMID:-}"
 WIN_TRAFFIC_PS1="${WIN_TRAFFIC_PS1:-/root/win-traffic.ps1}"
 WIN_SETUP_PS1="${WIN_SETUP_PS1:-/root/setup-scheduled-tasks.ps1}"
 EOF
@@ -129,6 +128,14 @@ _migrate_config() {
         echo -e "${YELLOW}  Config: removed HQ_START/BRANCH_START (replaced by HQ_RANGE/BRANCH_RANGE in v2.3.0).${NC}"
         echo -e "${YELLOW}  CTID ranges will be prompted on next deploy.${NC}"
       fi
+      changed=true
+    fi
+  fi
+
+  # v3.0.0: WIN_VMID removed (replaced by lab-windows tag-based discovery)
+  if version_gt "3.0.0" "$saved_ver"; then
+    if grep -q '^WIN_VMID=' "$CONFIG_FILE" 2>/dev/null; then
+      sed -i '/^WIN_VMID=/d' "$CONFIG_FILE"
       changed=true
     fi
   fi
@@ -320,7 +327,7 @@ except: pass
 " 2>/dev/null)
     [ -n "$node_parsed" ] && all_parsed="${all_parsed}${all_parsed:+$'\n'}${node_parsed}"
 
-    # QEMU VMs — IDs only (no tags/hostname needed; just occupy the ID space)
+    # QEMU VMs — capture tags for lab-windows discovery
     raw=$(pvesh get /nodes/"$node"/qemu --output-format json 2>/dev/null) || raw="[]"
     node_parsed=$(echo "$raw" | python3 -c "
 import sys,json
@@ -328,7 +335,7 @@ node='$node'
 try:
     for r in json.load(sys.stdin):
         vmid=r.get('vmid','')
-        if vmid: print('{}\t{}\t{}\t{}\t'.format(vmid, node, r.get('status',''), r.get('name','')))
+        if vmid: print('{}\t{}\t{}\t{}\t{}'.format(vmid, node, r.get('status',''), r.get('name',''), r.get('tags') or ''))
 except: pass
 " 2>/dev/null)
     [ -n "$node_parsed" ] && all_parsed="${all_parsed}${all_parsed:+$'\n'}${node_parsed}"
@@ -3262,10 +3269,30 @@ cmd_update() {
   rm -f "$TEMP"
 
   echo -e "${GREEN}✓ Updated to v${REMOTE_VERSION}${NC}"
+
+  # Also update the PowerShell scripts alongside the main script
+  local script_dir ps1_base ps1_file ps1_dest
+  script_dir="$(dirname "$SCRIPT_PATH")"
+  if [ -n "$target_version" ]; then
+    ps1_base="https://raw.githubusercontent.com/mpreissner/proxmox-lab-scripts/v${target_version}"
+  else
+    ps1_base="https://raw.githubusercontent.com/mpreissner/proxmox-lab-scripts/main"
+  fi
+  echo "  Updating PowerShell scripts..."
+  for ps1_file in "win-traffic.ps1" "setup-scheduled-tasks.ps1"; do
+    ps1_dest="${script_dir}/${ps1_file}"
+    if curl -fsSL --connect-timeout 10 "${ps1_base}/${ps1_file}" -o "$ps1_dest" 2>/dev/null; then
+      echo -e "  ${GREEN}✓ ${ps1_file}${NC}"
+    else
+      echo -e "  ${YELLOW}  ${ps1_file} — skipped (network error)${NC}"
+    fi
+  done
+
   if ! $skip_confirm; then
     echo ""
     echo "Exiting — relaunch proxmox-lab.sh to run the new version."
     echo "To push updated traffic profiles to containers, run option 4 (Install Traffic Generator) after relaunching."
+    echo "To push updated Windows scripts to VMs, use option 6 (Windows Tools) after relaunching."
     exit 0
   fi
 }
@@ -3451,67 +3478,207 @@ _win_vm_write_file() {
   done
 }
 
-# ============================================================
-# MODULE: Install Windows VM Certificate
-# ============================================================
-
-cmd_install_windows_cert() {
-  _load_config
-  section_header "Install Windows VM Certificate"
-
-  # --- Show running VMs across cluster ---
-  echo ""
-  echo "Running VMs on cluster:"
-  local _nodes _node
-  _nodes=$(get_cluster_nodes 2>/dev/null)
-  [ -z "$_nodes" ] && _nodes=$(get_local_node)
-  printf "  %-8s %-24s %s\n" "VMID" "Name" "Node"
-  printf "  %-8s %-24s %s\n" "--------" "------------------------" "--------"
-  for _node in $_nodes; do
-    pvesh get /nodes/"$_node"/qemu --output-format json 2>/dev/null | python3 -c "
-import sys,json
-node='$_node'
-for r in json.load(sys.stdin):
-    if r.get('status') == 'running':
-        print('  {:<8} {:<24} {}'.format(r.get('vmid',''), r.get('name','-')[:24], node))
+# Args: <node> <vmid> <ps_command_string>
+# Stdout: trimmed output of the PowerShell command; empty on failure
+_win_exec_ps_capture() {
+  local node="$1" vmid="$2" pscmd="$3"
+  run_on_node "$node" qm guest exec --synchronous 1 "$vmid" -- \
+    powershell.exe -ExecutionPolicy Bypass -NonInteractive -Command "$pscmd" \
+    2>/dev/null | \
+    python3 -c "
+import sys, json
+try:
+    d = json.load(sys.stdin)
+    print(d.get('out-data', '').strip())
+except:
+    pass
 " 2>/dev/null
+}
+
+# Args: <node> <vmid> <thumbprint_no_colons>
+# Returns 0 if cert found in Trusted Root store, 1 if not
+_win_cert_installed() {
+  local node="$1" vmid="$2" thumbprint="$3"
+  local result
+  result=$(_win_exec_ps_capture "$node" "$vmid" \
+    "\$s=New-Object Security.Cryptography.X509Certificates.X509Store('Root','LocalMachine');\$s.Open('ReadOnly');\$n=(\$s.Certificates|Where-Object{\$_.Thumbprint -ieq '${thumbprint}'}).Count;\$s.Close();Write-Output \$n")
+  [[ "${result:-0}" -gt 0 ]]
+}
+
+# Args: <node> <vmid> <remote_win_path>
+# Stdout: version string from $SCRIPT_VERSION line, or "none" if missing/unreadable
+_win_script_version() {
+  local node="$1" vmid="$2" win_path="$3"
+  local result
+  result=$(_win_exec_ps_capture "$node" "$vmid" \
+    "try { (Select-String -Path '${win_path}' -Pattern '^\\\$SCRIPT_VERSION').Line -replace '.*\"(.*)\".*','\$1' } catch { Write-Output 'none' }")
+  echo "${result:-none}"
+}
+
+_select_win_vms() {
+  _SELECTED_WIN_VMIDS=()
+  local vmids=() names=() nodes=() statuses=()
+
+  for id in "${!_CT_TAGS[@]}"; do
+    local tags="${_CT_TAGS[$id]:-}"
+    if [[ ";${tags};" == *";lab-windows;"* ]] || [[ "$tags" == "lab-windows" ]]; then
+      vmids+=("$id")
+      names+=("${_CT_HOSTNAME[$id]:-unknown}")
+      nodes+=("${_CT_NODE[$id]:-unknown}")
+      statuses+=("${_CT_STATUS[$id]:-stopped}")
+    fi
+  done
+
+  if [ ${#vmids[@]} -eq 0 ]; then
+    echo -e "${YELLOW}  No VMs tagged 'lab-windows'. Use option 1 (Tag Windows VMs) first.${NC}"
+    return 1
+  fi
+
+  echo ""
+  echo "Windows VMs tagged 'lab-windows':"
+  printf "  %-4s %-8s %-24s %-16s %s\n" "#" "VMID" "Name" "Node" "Status"
+  echo "  -------------------------------------------------------"
+  local i
+  for i in "${!vmids[@]}"; do
+    local status_colored
+    if [[ "${statuses[$i]}" == "running" ]]; then
+      status_colored="${GREEN}${statuses[$i]}${NC}"
+    else
+      status_colored="${YELLOW}${statuses[$i]}${NC}"
+    fi
+    printf "  %-4s %-8s %-24s %-16s " "$((i+1))" "${vmids[$i]}" "${names[$i]}" "${nodes[$i]}"
+    echo -e "$status_colored"
   done
   echo ""
 
-  # --- VM ID ---
-  if [ -n "${WIN_VMID:-}" ]; then
-    read -p "  Windows VM ID [${WIN_VMID}]: " _input
-    WIN_VMID="${_input:-$WIN_VMID}"
+  read -p "  Select VMs (numbers/comma-separated, or 'all') [all]: " _sel
+  _sel="${_sel:-all}"
+
+  if [[ "$_sel" == "all" ]]; then
+    _SELECTED_WIN_VMIDS=("${vmids[@]}")
   else
-    while [ -z "${WIN_VMID:-}" ]; do
-      read -p "  Windows VM ID: " WIN_VMID
+    for token in $(echo "$_sel" | tr ',' ' '); do
+      if [[ "$token" =~ ^[0-9]+$ ]] && [ "$token" -ge 1 ] && [ "$token" -le "${#vmids[@]}" ]; then
+        _SELECTED_WIN_VMIDS+=("${vmids[$((token-1))]}")
+      else
+        echo -e "${YELLOW}  Skipping invalid selection: ${token}${NC}"
+      fi
     done
   fi
 
-  # --- Locate VM on cluster ---
-  echo "  Locating VM ${WIN_VMID} on cluster..."
-  local _vm_node
-  _vm_node=$(_find_vm_node "$WIN_VMID")
-  if [ -z "$_vm_node" ]; then
-    echo -e "${RED}  Error: VM ${WIN_VMID} not found on any cluster node.${NC}"
+  if [ ${#_SELECTED_WIN_VMIDS[@]} -eq 0 ]; then
+    echo -e "${RED}  No valid VMs selected.${NC}"
     return 1
   fi
-  echo -e "  ${GREEN}Found VM ${WIN_VMID} on node: ${_vm_node}${NC}"
+  echo -e "  ${GREEN}Targeting ${#_SELECTED_WIN_VMIDS[@]} VM(s): ${_SELECTED_WIN_VMIDS[*]}${NC}"
+}
 
-  # --- Check VM is running ---
-  if ! run_on_node "$_vm_node" qm status "$WIN_VMID" 2>/dev/null | grep -q "running"; then
-    echo -e "${RED}  Error: VM ${WIN_VMID} is not running. Start it and try again.${NC}"
+# ============================================================
+# MODULE: Windows Tools
+# ============================================================
+
+cmd_tag_windows_vms() {
+  _load_config
+  _load_ct_data
+  section_header "Tag Windows VMs"
+
+  local vmids=() names=() nodes=() statuses=() tags_list=()
+
+  for id in "${!_CT_NODE[@]}"; do
+    # Only QEMU VMs have a qemu-style status; skip LXC (identified by lab-managed tag)
+    local tags="${_CT_TAGS[$id]:-}"
+    # Include all IDs present — filter out LXC containers by checking if they
+    # have the lab-managed tag (LXC containers); VMs typically won't
+    vmids+=("$id")
+    names+=("${_CT_HOSTNAME[$id]:-unknown}")
+    nodes+=("${_CT_NODE[$id]:-unknown}")
+    statuses+=("${_CT_STATUS[$id]:-stopped}")
+    tags_list+=("$tags")
+  done
+
+  if [ ${#vmids[@]} -eq 0 ]; then
+    echo -e "${YELLOW}  No VMs/containers found on cluster.${NC}"
     return 1
   fi
 
-  # --- Check QEMU guest agent ---
-  echo "  Checking QEMU guest agent..."
-  if ! run_on_node "$_vm_node" qm agent "$WIN_VMID" ping 2>/dev/null; then
-    echo -e "${RED}  Error: QEMU guest agent is not responding on VM ${WIN_VMID}.${NC}"
-    echo "  Install the QEMU guest agent in Windows and ensure the service is running."
+  # Sort by VMID numerically
+  local sorted_indices=()
+  while IFS= read -r idx; do
+    sorted_indices+=("$idx")
+  done < <(for i in "${!vmids[@]}"; do echo "$i ${vmids[$i]}"; done | sort -k2 -n | awk '{print $1}')
+
+  echo ""
+  echo "All VMs/Containers on cluster:"
+  printf "  %-4s %-8s %-24s %-16s %-12s %s\n" "#" "VMID" "Name" "Node" "Status" "Tags"
+  echo "  -----------------------------------------------------------------------"
+  local display_idx=1
+  local idx_map=()
+  for i in "${sorted_indices[@]}"; do
+    local marker=""
+    local tag="${tags_list[$i]}"
+    if [[ ";${tag};" == *";lab-windows;"* ]] || [[ "$tag" == "lab-windows" ]]; then
+      marker=" [tagged]"
+    elif echo "${names[$i]}" | grep -qi 'win'; then
+      marker=" *"
+    fi
+    printf "  %-4s %-8s %-24s %-16s %-12s %s\n" \
+      "${display_idx}" "${vmids[$i]}" "${names[$i]}" "${nodes[$i]}" "${statuses[$i]}" "${tag}${marker}"
+    idx_map+=("$i")
+    display_idx=$((display_idx + 1))
+  done
+  echo ""
+  echo "  (* = name contains 'win', candidate for tagging)"
+  echo ""
+
+  read -p "  Select VMs to tag (numbers/comma-separated, or 'all'): " _sel
+  if [ -z "$_sel" ]; then
+    echo "  No selection made."
+    return 0
+  fi
+
+  local selected_indices=()
+  if [[ "$_sel" == "all" ]]; then
+    selected_indices=("${idx_map[@]}")
+  else
+    for token in $(echo "$_sel" | tr ',' ' '); do
+      if [[ "$token" =~ ^[0-9]+$ ]] && [ "$token" -ge 1 ] && [ "$token" -le "${#idx_map[@]}" ]; then
+        selected_indices+=("${idx_map[$((token-1))]}")
+      else
+        echo -e "${YELLOW}  Skipping invalid selection: ${token}${NC}"
+      fi
+    done
+  fi
+
+  if [ ${#selected_indices[@]} -eq 0 ]; then
+    echo -e "${RED}  No valid VMs selected.${NC}"
     return 1
   fi
-  echo -e "  ${GREEN}Guest agent is available.${NC}"
+
+  echo ""
+  for i in "${selected_indices[@]}"; do
+    local vmid="${vmids[$i]}"
+    local node="${nodes[$i]}"
+    local existing="${tags_list[$i]}"
+    if [[ ";${existing};" == *";lab-windows;"* ]] || [[ "$existing" == "lab-windows" ]]; then
+      echo -e "  ${CYAN}VM ${vmid} (${names[$i]}): already tagged lab-windows — skipping${NC}"
+    else
+      local new_tags="${existing:+${existing};}lab-windows"
+      echo "  Tagging VM ${vmid} (${names[$i]}) on ${node}..."
+      if run_on_node "$node" qm set "$vmid" --tags "$new_tags" 2>/dev/null; then
+        echo -e "  ${GREEN}✓ VM ${vmid} tagged: ${new_tags}${NC}"
+      else
+        echo -e "  ${RED}✗ Failed to tag VM ${vmid}${NC}"
+      fi
+    fi
+  done
+}
+
+cmd_windows_install_cert() {
+  _load_config
+  _load_ct_data
+  section_header "Install TLS Certificate on Windows VMs"
+
+  _select_win_vms || return 1
 
   # --- Certificate path ---
   echo ""
@@ -3526,146 +3693,302 @@ for r in json.load(sys.stdin):
     return 1
   fi
 
+  # Extract thumbprint for skip-if-current check
+  local thumbprint
+  thumbprint=$(openssl x509 -in "$CERT_PATH" -fingerprint -sha1 -noout 2>/dev/null \
+    | sed 's/.*=//; s/://g' | tr '[:lower:]' '[:upper:]')
+  if [ -n "$thumbprint" ]; then
+    echo -e "  ${CYAN}Certificate thumbprint: ${thumbprint}${NC}"
+  fi
+
   local CERT_FILENAME
   CERT_FILENAME=$(basename "$CERT_PATH")
   local WIN_TEMP_PATH="C:\\Windows\\Temp\\${CERT_FILENAME}"
 
-  # --- Copy certificate to VM via base64+PowerShell ---
   echo ""
-  echo "  Copying certificate to VM ${WIN_VMID}..."
-  if ! _win_vm_write_file "$_vm_node" "$WIN_VMID" "$CERT_PATH" "$WIN_TEMP_PATH"; then
-    echo -e "${RED}  Error: Failed to copy certificate to VM.${NC}"
-    return 1
-  fi
-  echo -e "  ${GREEN}Certificate copied to ${WIN_TEMP_PATH}${NC}"
+  local vmid
+  for vmid in "${_SELECTED_WIN_VMIDS[@]}"; do
+    local _vm_node="${_CT_NODE[$vmid]:-}"
+    if [ -z "$_vm_node" ]; then
+      _vm_node=$(_find_vm_node "$vmid")
+    fi
+    if [ -z "$_vm_node" ]; then
+      echo -e "${RED}  VM ${vmid}: not found on any cluster node — skipping${NC}"
+      continue
+    fi
 
-  # --- Install certificate to Trusted Root CA store ---
-  echo "  Installing certificate to Trusted Root Certification Authorities..."
-  run_on_node "$_vm_node" qm guest exec "$WIN_VMID" -- \
-    powershell.exe -ExecutionPolicy Bypass -NonInteractive -Command \
-    "\$cert = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2('${WIN_TEMP_PATH}'); \$store = New-Object System.Security.Cryptography.X509Certificates.X509Store('Root','LocalMachine'); \$store.Open('ReadWrite'); \$store.Add(\$cert); \$store.Close()" \
-    2>/dev/null
-  echo -e "  ${GREEN}Certificate install command sent.${NC}"
+    echo "  --- VM ${vmid} (${_CT_HOSTNAME[$vmid]:-unknown}) on ${_vm_node} ---"
 
-  # --- Clean up temp file ---
-  run_on_node "$_vm_node" qm guest exec "$WIN_VMID" -- \
-    cmd.exe /c "del \"${WIN_TEMP_PATH}\"" 2>/dev/null || true
+    if ! run_on_node "$_vm_node" qm status "$vmid" 2>/dev/null | grep -q "running"; then
+      echo -e "  ${YELLOW}  Not running — skipping${NC}"
+      continue
+    fi
+
+    if ! run_on_node "$_vm_node" qm agent "$vmid" ping 2>/dev/null; then
+      echo -e "  ${YELLOW}  Guest agent not responding — skipping${NC}"
+      continue
+    fi
+
+    if [ -n "$thumbprint" ] && _win_cert_installed "$_vm_node" "$vmid" "$thumbprint"; then
+      echo -e "  ${CYAN}  Certificate already installed — skipping${NC}"
+      continue
+    fi
+
+    echo "  Copying certificate..."
+    if ! _win_vm_write_file "$_vm_node" "$vmid" "$CERT_PATH" "$WIN_TEMP_PATH"; then
+      echo -e "  ${RED}  Failed to copy certificate — skipping${NC}"
+      continue
+    fi
+
+    echo "  Installing to Trusted Root CA store..."
+    run_on_node "$_vm_node" qm guest exec "$vmid" -- \
+      powershell.exe -ExecutionPolicy Bypass -NonInteractive -Command \
+      "\$cert = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2('${WIN_TEMP_PATH}'); \$store = New-Object System.Security.Cryptography.X509Certificates.X509Store('Root','LocalMachine'); \$store.Open('ReadWrite'); \$store.Add(\$cert); \$store.Close()" \
+      2>/dev/null
+
+    run_on_node "$_vm_node" qm guest exec "$vmid" -- \
+      cmd.exe /c "del \"${WIN_TEMP_PATH}\"" 2>/dev/null || true
+
+    echo -e "  ${GREEN}  ✓ Certificate installed${NC}"
+  done
 
   echo ""
-  echo -e "${GREEN}✓ Done. To verify in Windows:${NC}"
-  echo "    Run certmgr.msc → Trusted Root Certification Authorities → Certificates"
-  echo "    Look for: $(basename "${CERT_FILENAME%.*}")"
-
   _maybe_save_config
 }
 
-# ============================================================
-# MODULE: Setup Windows VM Traffic Generator
-# ============================================================
-
-cmd_setup_windows_vm() {
+cmd_windows_install_traffic() {
   _load_config
-  section_header "Setup Windows VM Traffic Generator"
+  _load_ct_data
+  section_header "Install / Update Traffic Generator Script"
 
-  # --- Show running VMs across cluster ---
+  _select_win_vms || return 1
+
   echo ""
-  echo "Running VMs on cluster:"
-  local _nodes _node
-  _nodes=$(get_cluster_nodes 2>/dev/null)
-  [ -z "$_nodes" ] && _nodes=$(get_local_node)
-  printf "  %-8s %-24s %s\n" "VMID" "Name" "Node"
-  printf "  %-8s %-24s %s\n" "--------" "------------------------" "--------"
-  for _node in $_nodes; do
-    pvesh get /nodes/"$_node"/qemu --output-format json 2>/dev/null | python3 -c "
-import sys,json
-node='$_node'
-for r in json.load(sys.stdin):
-    if r.get('status') == 'running':
-        print('  {:<8} {:<24} {}'.format(r.get('vmid',''), r.get('name','-')[:24], node))
-" 2>/dev/null
-  done
-  echo ""
-
-  # --- VM ID ---
-  if [ -n "${WIN_VMID:-}" ]; then
-    read -p "  Windows VM ID [${WIN_VMID}]: " _input
-    WIN_VMID="${_input:-$WIN_VMID}"
-  else
-    while [ -z "${WIN_VMID:-}" ]; do
-      read -p "  Windows VM ID: " WIN_VMID
-    done
-  fi
-
-  # --- Locate VM on cluster ---
-  echo "  Locating VM ${WIN_VMID} on cluster..."
-  local _vm_node
-  _vm_node=$(_find_vm_node "$WIN_VMID")
-  if [ -z "$_vm_node" ]; then
-    echo -e "${RED}  Error: VM ${WIN_VMID} not found on any cluster node.${NC}"
-    return 1
-  fi
-  echo -e "  ${GREEN}Found VM ${WIN_VMID} on node: ${_vm_node}${NC}"
-
-  # --- Check VM is running ---
-  if ! run_on_node "$_vm_node" qm status "$WIN_VMID" 2>/dev/null | grep -q "running"; then
-    echo -e "${RED}  Error: VM ${WIN_VMID} is not running. Start it and try again.${NC}"
-    return 1
-  fi
-
-  # --- Check QEMU guest agent ---
-  echo "  Checking QEMU guest agent..."
-  if ! run_on_node "$_vm_node" qm agent "$WIN_VMID" ping 2>/dev/null; then
-    echo -e "${RED}  Error: QEMU guest agent is not responding on VM ${WIN_VMID}.${NC}"
-    echo "  Install the QEMU guest agent in Windows and ensure the service is running."
-    return 1
-  fi
-  echo -e "  ${GREEN}Guest agent is available.${NC}"
-
-  # --- Script paths on Proxmox host ---
-  echo ""
-  echo -e "${BLUE}Script Paths (on this Proxmox host)${NC}"
   read_with_default "win-traffic.ps1 path" "${WIN_TRAFFIC_PS1:-/root/win-traffic.ps1}" "WIN_TRAFFIC_PS1"
-  read_with_default "setup-scheduled-tasks.ps1 path" "${WIN_SETUP_PS1:-/root/setup-scheduled-tasks.ps1}" "WIN_SETUP_PS1"
-  for f in "$WIN_TRAFFIC_PS1" "$WIN_SETUP_PS1"; do
-    if [ ! -f "$f" ]; then
-      echo -e "${RED}  Error: File not found: ${f}${NC}"
-      return 1
+  if [ ! -f "$WIN_TRAFFIC_PS1" ]; then
+    echo -e "${RED}  Error: File not found: ${WIN_TRAFFIC_PS1}${NC}"
+    return 1
+  fi
+
+  local local_ver
+  local_ver=$(grep -m1 '^\$SCRIPT_VERSION' "$WIN_TRAFFIC_PS1" 2>/dev/null | sed 's/.*"\(.*\)".*/\1/')
+  if [ -n "$local_ver" ]; then
+    echo -e "  ${CYAN}Local version: ${local_ver}${NC}"
+  fi
+
+  echo ""
+  local vmid
+  for vmid in "${_SELECTED_WIN_VMIDS[@]}"; do
+    local _vm_node="${_CT_NODE[$vmid]:-}"
+    if [ -z "$_vm_node" ]; then
+      _vm_node=$(_find_vm_node "$vmid")
+    fi
+    if [ -z "$_vm_node" ]; then
+      echo -e "${RED}  VM ${vmid}: not found on any cluster node — skipping${NC}"
+      continue
+    fi
+
+    echo "  --- VM ${vmid} (${_CT_HOSTNAME[$vmid]:-unknown}) on ${_vm_node} ---"
+
+    if ! run_on_node "$_vm_node" qm status "$vmid" 2>/dev/null | grep -q "running"; then
+      echo -e "  ${YELLOW}  Not running — skipping${NC}"
+      continue
+    fi
+
+    if ! run_on_node "$_vm_node" qm agent "$vmid" ping 2>/dev/null; then
+      echo -e "  ${YELLOW}  Guest agent not responding — skipping${NC}"
+      continue
+    fi
+
+    local remote_ver
+    remote_ver=$(_win_script_version "$_vm_node" "$vmid" 'C:\ProgramData\proxmox-lab\win-traffic.ps1')
+
+    if [ -n "$local_ver" ] && [ "$remote_ver" = "$local_ver" ]; then
+      echo -e "  ${CYAN}  Already up to date (v${local_ver}) — skipping${NC}"
+      continue
+    fi
+
+    echo "  Copying win-traffic.ps1..."
+    _win_vm_write_file "$_vm_node" "$vmid" "$WIN_TRAFFIC_PS1" 'C:\ProgramData\proxmox-lab\win-traffic.ps1'
+
+    if [ "$remote_ver" = "none" ] || [ -z "$remote_ver" ]; then
+      echo -e "  ${GREEN}  ✓ Installed v${local_ver:-unknown}${NC}"
+    else
+      echo -e "  ${GREEN}  ✓ Updated v${remote_ver} → v${local_ver:-unknown}${NC}"
     fi
   done
 
-  # --- Create destination directory ---
-  local WIN_DEST_DIR='C:\ProgramData\proxmox-lab'
   echo ""
-  echo "  Creating ${WIN_DEST_DIR} on VM ${WIN_VMID}..."
-  run_on_node "$_vm_node" qm guest exec "$WIN_VMID" -- \
-    powershell.exe -ExecutionPolicy Bypass -NonInteractive -Command \
-    "New-Item -ItemType Directory -Force -Path 'C:\ProgramData\proxmox-lab' | Out-Null" \
-    2>/dev/null
-
-  # --- Copy scripts ---
-  echo "  Copying win-traffic.ps1..."
-  _win_vm_write_file "$_vm_node" "$WIN_VMID" "$WIN_TRAFFIC_PS1" 'C:\ProgramData\proxmox-lab\win-traffic.ps1'
-  echo -e "  ${GREEN}✓ win-traffic.ps1 copied${NC}"
-
-  echo "  Copying setup-scheduled-tasks.ps1..."
-  _win_vm_write_file "$_vm_node" "$WIN_VMID" "$WIN_SETUP_PS1" 'C:\ProgramData\proxmox-lab\setup-scheduled-tasks.ps1'
-  echo -e "  ${GREEN}✓ setup-scheduled-tasks.ps1 copied${NC}"
-
-  # --- Run setup-scheduled-tasks.ps1 ---
-  echo ""
-  echo "  Running setup-scheduled-tasks.ps1..."
-  run_on_node "$_vm_node" qm guest exec "$WIN_VMID" -- \
-    powershell.exe -ExecutionPolicy Bypass -NonInteractive \
-    -File 'C:\ProgramData\proxmox-lab\setup-scheduled-tasks.ps1' \
-    2>/dev/null
-  echo -e "  ${GREEN}✓ Scheduled tasks configured${NC}"
-
-  echo ""
-  echo -e "${GREEN}✓ Windows VM traffic generator setup complete.${NC}"
-  echo "  Scripts installed to: ${WIN_DEST_DIR}"
-  echo "  Verify in Windows: open Task Scheduler and check for scheduled lab tasks."
-
   _maybe_save_config
+}
+
+cmd_windows_configure_tasks() {
+  _load_config
+  _load_ct_data
+  section_header "Configure Scheduled Tasks"
+
+  _select_win_vms || return 1
+
+  echo ""
+  read_with_default "setup-scheduled-tasks.ps1 path" "${WIN_SETUP_PS1:-/root/setup-scheduled-tasks.ps1}" "WIN_SETUP_PS1"
+  if [ ! -f "$WIN_SETUP_PS1" ]; then
+    echo -e "${RED}  Error: File not found: ${WIN_SETUP_PS1}${NC}"
+    return 1
+  fi
+
+  local local_ver
+  local_ver=$(grep -m1 '^\$SCRIPT_VERSION' "$WIN_SETUP_PS1" 2>/dev/null | sed 's/.*"\(.*\)".*/\1/')
+
+  echo ""
+  echo "  Select profiles to install (numbers/comma-separated, or 'all') [all]:"
+  echo "    1) office-worker"
+  echo "    2) sales"
+  echo "    3) developer"
+  echo "    4) executive"
+  echo "    5) threat"
+  echo ""
+  read -p "  Profiles [all]: " _prof_sel
+  _prof_sel="${_prof_sel:-all}"
+
+  local all_profiles=("office-worker" "sales" "developer" "executive" "threat")
+  local selected_profiles=()
+  if [[ "$_prof_sel" == "all" ]]; then
+    selected_profiles=("${all_profiles[@]}")
+  else
+    for token in $(echo "$_prof_sel" | tr ',' ' '); do
+      if [[ "$token" =~ ^[0-9]+$ ]] && [ "$token" -ge 1 ] && [ "$token" -le 5 ]; then
+        selected_profiles+=("${all_profiles[$((token-1))]}")
+      else
+        echo -e "${YELLOW}  Skipping invalid profile selection: ${token}${NC}"
+      fi
+    done
+  fi
+
+  if [ ${#selected_profiles[@]} -eq 0 ]; then
+    echo -e "${RED}  No valid profiles selected.${NC}"
+    return 1
+  fi
+
+  local PROFILE_ARG
+  PROFILE_ARG=$(IFS=','; echo "${selected_profiles[*]}")
+  echo -e "  ${CYAN}Selected profiles: ${PROFILE_ARG}${NC}"
+
+  local WIN_DEST_DIR='C:\ProgramData\proxmox-lab'
+
+  echo ""
+  local vmid
+  for vmid in "${_SELECTED_WIN_VMIDS[@]}"; do
+    local _vm_node="${_CT_NODE[$vmid]:-}"
+    if [ -z "$_vm_node" ]; then
+      _vm_node=$(_find_vm_node "$vmid")
+    fi
+    if [ -z "$_vm_node" ]; then
+      echo -e "${RED}  VM ${vmid}: not found on any cluster node — skipping${NC}"
+      continue
+    fi
+
+    echo "  --- VM ${vmid} (${_CT_HOSTNAME[$vmid]:-unknown}) on ${_vm_node} ---"
+
+    if ! run_on_node "$_vm_node" qm status "$vmid" 2>/dev/null | grep -q "running"; then
+      echo -e "  ${YELLOW}  Not running — skipping${NC}"
+      continue
+    fi
+
+    if ! run_on_node "$_vm_node" qm agent "$vmid" ping 2>/dev/null; then
+      echo -e "  ${YELLOW}  Guest agent not responding — skipping${NC}"
+      continue
+    fi
+
+    echo "  Creating ${WIN_DEST_DIR}..."
+    run_on_node "$_vm_node" qm guest exec "$vmid" -- \
+      powershell.exe -ExecutionPolicy Bypass -NonInteractive -Command \
+      "New-Item -ItemType Directory -Force -Path 'C:\ProgramData\proxmox-lab' | Out-Null" \
+      2>/dev/null
+
+    echo "  Copying setup-scheduled-tasks.ps1..."
+    _win_vm_write_file "$_vm_node" "$vmid" "$WIN_SETUP_PS1" 'C:\ProgramData\proxmox-lab\setup-scheduled-tasks.ps1'
+
+    echo "  Running setup-scheduled-tasks.ps1 -Profiles ${PROFILE_ARG}..."
+    run_on_node "$_vm_node" qm guest exec "$vmid" -- \
+      powershell.exe -ExecutionPolicy Bypass -NonInteractive \
+      -File 'C:\ProgramData\proxmox-lab\setup-scheduled-tasks.ps1' \
+      -Profiles "$PROFILE_ARG" 2>/dev/null
+
+    echo -e "  ${GREEN}  ✓ Scheduled tasks configured (profiles: ${PROFILE_ARG})${NC}"
+  done
+
+  echo ""
+  _maybe_save_config
+}
+
+# Ensures win-traffic.ps1 and setup-scheduled-tasks.ps1 exist on this host.
+# Checks configured paths first; if missing, checks the script's own directory;
+# if still missing, silently fetches from GitHub main and saves there.
+# Updates in-session vars so the current session sees the correct paths.
+_ensure_win_scripts() {
+  local script_dir
+  script_dir="$(dirname "$(realpath "$0")")"
+  local base_url="https://raw.githubusercontent.com/mpreissner/proxmox-lab-scripts/main"
+
+  local filename var_name configured_path default_path
+  for filename in "win-traffic.ps1" "setup-scheduled-tasks.ps1"; do
+    if [[ "$filename" == "win-traffic.ps1" ]]; then
+      var_name="WIN_TRAFFIC_PS1"
+    else
+      var_name="WIN_SETUP_PS1"
+    fi
+    configured_path="${!var_name}"
+    default_path="${script_dir}/${filename}"
+
+    # Found at configured path — nothing to do
+    [ -n "$configured_path" ] && [ -f "$configured_path" ] && continue
+
+    # Found in script directory — update in-session var and move on
+    if [ -f "$default_path" ]; then
+      printf -v "$var_name" '%s' "$default_path"
+      continue
+    fi
+
+    # Not found anywhere — fetch from GitHub
+    echo -e "  ${CYAN}${filename} not found — fetching from GitHub...${NC}"
+    local tmp
+    tmp=$(mktemp /tmp/proxmox-lab-ps1.XXXXXX)
+    if curl -fsSL --connect-timeout 10 "${base_url}/${filename}" -o "$tmp" 2>/dev/null; then
+      mv "$tmp" "$default_path"
+      printf -v "$var_name" '%s' "$default_path"
+      echo -e "  ${GREEN}✓ Saved to ${default_path}${NC}"
+    else
+      rm -f "$tmp"
+      echo -e "  ${YELLOW}  Could not fetch ${filename} — set path manually when prompted.${NC}"
+    fi
+  done
+}
+
+cmd_windows_tools() {
+  _load_config
+  _ensure_win_scripts
+  while true; do
+    echo ""
+    echo -e "${BLUE}=========================================="
+    echo "  Windows Tools"
+    echo -e "==========================================${NC}"
+    echo ""
+    echo "  1) Tag Windows VMs"
+    echo "  2) Install TLS Certificate"
+    echo "  3) Install / Update Traffic Generator Script"
+    echo "  4) Configure Scheduled Tasks"
+    echo "  5) Back"
+    echo ""
+    read -p "Select option [1-5]: " choice
+    case "$choice" in
+      1) ( cmd_tag_windows_vms )         || echo -e "${RED}Operation failed or was aborted.${NC}" ;;
+      2) ( cmd_windows_install_cert )    || echo -e "${RED}Operation failed or was aborted.${NC}" ;;
+      3) ( cmd_windows_install_traffic ) || echo -e "${RED}Operation failed or was aborted.${NC}" ;;
+      4) ( cmd_windows_configure_tasks ) || echo -e "${RED}Operation failed or was aborted.${NC}" ;;
+      5|b|B|q|Q) return 0 ;;
+      *) echo -e "${RED}Invalid option.${NC}" ;;
+    esac
+  done
 }
 
 # ============================================================
@@ -3684,15 +4007,14 @@ main_menu() {
     echo "  3) Start Containers"
     echo "  4) Install Traffic Generator"
     echo "  5) Full Setup Wizard  (steps 1 → 2 → 3 → 4)"
-    echo "  6) Install Windows VM Certificate"
-    echo "  7) Setup Windows VM Traffic Generator"
-    echo "  8) Show Status"
-    echo "  9) Update Container Packages"
-    echo " 10) Update Lab Script"
-    echo " 11) Stop Containers"
-    echo " 12) Exit"
+    echo "  6) Windows Tools"
+    echo "  7) Show Status"
+    echo "  8) Update Container Packages"
+    echo "  9) Update Lab Script"
+    echo " 10) Stop Containers"
+    echo " 11) Exit"
     echo ""
-    read -p "Select option [1-12]: " choice
+    read -p "Select option [1-11]: " choice
 
     case "$choice" in
       1) ( cmd_create_template ) || echo -e "${RED}Operation failed or was aborted.${NC}" ;;
@@ -3700,18 +4022,17 @@ main_menu() {
       3) ( cmd_start_containers ) || echo -e "${RED}Operation failed or was aborted.${NC}" ;;
       4) ( cmd_install_traffic_gen ) || echo -e "${RED}Operation failed or was aborted.${NC}" ;;
       5) ( cmd_full_wizard ) || echo -e "${RED}Wizard failed or was aborted.${NC}" ;;
-      6) ( cmd_install_windows_cert ) || echo -e "${RED}Operation failed or was aborted.${NC}" ;;
-      7) ( cmd_setup_windows_vm ) || echo -e "${RED}Operation failed or was aborted.${NC}" ;;
-      8) ( cmd_show_status ) || echo -e "${RED}Operation failed or was aborted.${NC}" ;;
-      9) ( cmd_update_containers ) || echo -e "${RED}Operation failed or was aborted.${NC}" ;;
-      10) cmd_update || echo -e "${RED}Operation failed or was aborted.${NC}" ;;
-      11) ( cmd_stop_containers ) || echo -e "${RED}Operation failed or was aborted.${NC}" ;;
-      12|q|Q)
+      6) cmd_windows_tools || echo -e "${RED}Operation failed or was aborted.${NC}" ;;
+      7) ( cmd_show_status ) || echo -e "${RED}Operation failed or was aborted.${NC}" ;;
+      8) ( cmd_update_containers ) || echo -e "${RED}Operation failed or was aborted.${NC}" ;;
+      9) cmd_update || echo -e "${RED}Operation failed or was aborted.${NC}" ;;
+      10) ( cmd_stop_containers ) || echo -e "${RED}Operation failed or was aborted.${NC}" ;;
+      11|q|Q)
         echo "Goodbye!"
         exit 0
         ;;
       *)
-        echo -e "${RED}Invalid option. Please select 1-12.${NC}"
+        echo -e "${RED}Invalid option. Please select 1-11.${NC}"
         ;;
     esac
   done
@@ -3733,8 +4054,7 @@ case "${1:-}" in
   wizard)           cmd_full_wizard ;;
   update)              cmd_update ;;
   update-containers)   cmd_update_containers ;;
-  windows-cert)        cmd_install_windows_cert ;;
-  windows-setup)       cmd_setup_windows_vm ;;
+  windows)             cmd_windows_tools ;;
   _cleanup)            cmd_system_cleanup ;;
   --version|-v)        echo "proxmox-lab.sh v${VERSION}" ;;
   "")                  _startup_version_check; main_menu ;;
@@ -3753,8 +4073,7 @@ case "${1:-}" in
     echo "  wizard               Full setup wizard"
     echo "  update-containers    Update packages on all running lab containers"
     echo "  update               Check for updates and self-patch"
-    echo "  windows-cert         Install TLS cert on a Windows VM"
-    echo "  windows-setup        Push traffic scripts to a Windows VM and configure scheduled tasks"
+    echo "  windows              Open Windows Tools submenu (tag VMs, cert, traffic, tasks)"
     echo "  --version            Show version"
     echo ""
     echo "Run without arguments for the interactive menu."

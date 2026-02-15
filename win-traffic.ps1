@@ -1,4 +1,5 @@
 #Requires -Version 5.1
+$SCRIPT_VERSION = "3.0.0"
 <#
 .SYNOPSIS
     Windows traffic generator for Zscaler lab environments.

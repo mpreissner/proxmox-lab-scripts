@@ -5,6 +5,32 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.0.0] - 2026-02-15
+
+### Added
+- Windows Tools submenu (menu option 6 / `./proxmox-lab.sh windows`) consolidating all Windows VM management with tag-based multi-VM discovery
+- `cmd_tag_windows_vms`: bulk-tags VMs with `lab-windows`; highlights VMs with 'win' in the name as candidates; marks already-tagged VMs; comma-separated multi-select or `all`
+- `_win_exec_ps_capture()`: runs a PowerShell one-liner via `qm guest exec --synchronous 1` and returns trimmed stdout from the JSON response; foundation for all idempotency checks
+- `_win_cert_installed()`: queries the Windows Trusted Root store for a SHA1 thumbprint; returns true if the cert is already installed
+- `_win_script_version()`: reads `$SCRIPT_VERSION` from a PS1 file on a remote Windows VM; enables version-aware script push
+- `_select_win_vms()`: discovers all VMs tagged `lab-windows` cluster-wide; numbered table with status; comma-separated multi-select or `all`
+- `_ensure_win_scripts()`: silently fetches `win-traffic.ps1` and `setup-scheduled-tasks.ps1` from GitHub when entering the Windows Tools submenu if they are not present on the host; saves alongside `proxmox-lab.sh`; no prompt required
+- `cmd_update` now also downloads `win-traffic.ps1` and `setup-scheduled-tasks.ps1` after updating the main script; uses the same immutable tag ref when a target version is specified
+- `$SCRIPT_VERSION = "3.0.0"` added to `win-traffic.ps1` and `setup-scheduled-tasks.ps1` for remote version comparison during idempotency checks
+- `setup-scheduled-tasks.ps1`: `-Profiles` parameter (default: all five) for selective task creation; each task registration block wrapped in `if ($Profiles -contains "profile-name")`; existing tasks always removed before recreation (orphan-safe)
+
+### Changed
+- `cmd_install_windows_cert` replaced by `cmd_windows_install_cert`: operates on all `lab-windows`-tagged VMs; skips VMs where the certificate thumbprint is already present in the Trusted Root store
+- `cmd_setup_windows_vm` split into `cmd_windows_install_traffic` (version-aware — skips if `$SCRIPT_VERSION` matches remote) and `cmd_windows_configure_tasks` (always re-runs; passes selected profiles via `-Profiles`)
+- Main menu: items 6 (Install Windows VM Certificate) and 7 (Setup Windows VM Traffic Generator) replaced by single item 6 (Windows Tools); items 8–12 renumbered to 7–11
+- CLI: `windows-cert` and `windows-setup` commands removed; `windows` added (opens the submenu)
+- `_load_ct_data` QEMU section now captures the `tags` field (previously emitted an empty fifth column, unused)
+
+### Removed
+- `WIN_VMID` config key: removed from `save_config()`; `_migrate_config()` strips it from existing configs on first v3.0.0 launch
+
+---
+
 ## [2.6.6] - 2026-02-14
 
 ### Fixed
@@ -283,6 +309,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `browse_random()` invalid test operator (`-file` → `-f`) in `random-timing.sh`
 - `RUNNING_CONTAINERS` in `cmd_install_traffic_gen` now correctly filters to running containers only (`pct list` filtered by status field)
 
+[3.0.0]: https://github.com/mpreissner/proxmox-lab-scripts/compare/v2.6.6...v3.0.0
 [2.2.1]: https://github.com/mpreissner/proxmox-lab-scripts/compare/v2.2.0...v2.2.1
 [2.2.0]: https://github.com/mpreissner/proxmox-lab-scripts/compare/v2.1.0...v2.2.0
 [2.1.0]: https://github.com/mpreissner/proxmox-lab-scripts/compare/v2.0.0...v2.1.0

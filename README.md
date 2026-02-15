@@ -23,7 +23,7 @@ Provides a complete workflow for building a multi-container lab environment that
 - **Deploys Data Center and Branch network containers** with appropriate configurations, distributed across multiple Proxmox cluster nodes with auto-balanced or manual placement
 - **Generates realistic traffic patterns** for different user/server profiles, including GenAI platform usage
 - **Configures security tests** independently of normal traffic — DLP (network, GenAI prompt/file/image OCR), AV/malware, policy violations, UEBA anomalies
-- **Installs TLS inspection certificates on Windows VMs** via QEMU guest agent, cluster-aware across all Proxmox nodes
+- **Manages Windows VMs** via a dedicated submenu: bulk-tags VMs for discovery, installs TLS inspection certificates (skip-if-current), pushes and version-checks traffic scripts, and configures scheduled tasks with profile selection
 
 ## Script
 
@@ -37,13 +37,12 @@ A single interactive menu covering the full lab lifecycle.
 3. **Start Containers** — start stopped lab-managed containers
 4. **Install Traffic Generator** — push traffic profiles to containers
 5. **Full Setup Wizard** — runs steps 1 → 2 → 3 → 4 in sequence
-6. **Install Windows VM Certificate** — install a TLS inspection root CA on a Windows VM via QEMU guest agent
-7. **Setup Windows VM Traffic Generator** — push `win-traffic.ps1` and `setup-scheduled-tasks.ps1` to a Windows VM and register scheduled tasks
-8. **Show Status** — view all containers with running state and traffic gen status at a glance
-9. **Update Container Packages** — run `apk update && apk upgrade` on all running lab containers in parallel
-10. **Update Lab Script** — check GitHub for a newer version, show changelog, prompt to confirm, then self-patch the script in place and exit. On every interactive launch, the same check runs automatically: if a newer release exists, the changelog is shown and the user is prompted to update immediately before the menu appears. The script always exits after a successful update so the new version is loaded on relaunch.
-11. **Stop Containers** — stop all running lab-managed containers
-12. **Exit**
+6. **Windows Tools** — submenu for Windows VM management (see below)
+7. **Show Status** — view all containers with running state and traffic gen status at a glance
+8. **Update Container Packages** — run `apk update && apk upgrade` on all running lab containers in parallel
+9. **Update Lab Script** — check GitHub for a newer version, show changelog, prompt to confirm, then self-patch the script in place and exit. Also downloads updated `win-traffic.ps1` and `setup-scheduled-tasks.ps1` alongside the main script. On every interactive launch, the same check runs automatically before the menu appears.
+10. **Stop Containers** — stop all running lab-managed containers
+11. **Exit**
 
 **Interactive menu:**
 ```bash
@@ -61,8 +60,7 @@ A single interactive menu covering the full lab lifecycle.
 ./proxmox-lab.sh wizard
 ./proxmox-lab.sh update-containers
 ./proxmox-lab.sh update
-./proxmox-lab.sh windows-cert
-./proxmox-lab.sh windows-setup
+./proxmox-lab.sh windows
 ```
 
 **Config persistence:**
@@ -127,31 +125,31 @@ To verify the certificate is trusted in a container after deployment:
 pct exec 200 -- curl -sv https://www.google.com 2>&1 | grep -E "SSL|issuer|subject"
 ```
 
-### Windows VM Certificate
+### Windows Tools
 
-To install the TLS inspection certificate on a Windows VM, ensure the QEMU guest agent is installed and running inside Windows, then run:
+All Windows VM management is in the Windows Tools submenu (option 6) or via `./proxmox-lab.sh windows`. The submenu has four steps meant to be run in order on first setup:
 
-```bash
-./proxmox-lab.sh windows-cert
-```
+**Step 1 — Tag Windows VMs**
 
-The script discovers all running VMs across the cluster, prompts for the target VM ID, and installs the certificate to the Windows Trusted Root Certification Authorities store via PowerShell through the QEMU guest agent. The same `CERT_PATH` used for LXC containers is reused — no separate copy is needed. The VM ID is saved to `~/.proxmox-lab.conf` for subsequent runs.
+Tags one or more VMs with `lab-windows` so they appear in all subsequent Windows Tools operations. The script shows all VMs across the cluster, marks VMs with 'win' in the name as candidates, and lets you select by number or `all`.
 
-To verify in Windows after installation:
-- Run `certmgr.msc` → Trusted Root Certification Authorities → Certificates
-- Look for the Zscaler root CA entry
+**Step 2 — Install TLS Certificate**
 
-### Windows Traffic Generation
+Installs the TLS inspection root CA (same `CERT_PATH` as for LXC containers) to the Windows Trusted Root store on all selected VMs. Skips VMs where the certificate thumbprint is already present — safe to re-run.
 
-`win-traffic.ps1` and `setup-scheduled-tasks.ps1` are companion scripts for Windows VMs. To deploy them automatically, copy both files to the Proxmox host (e.g., `/root/`) and run:
+Requires the QEMU guest agent to be installed and running inside each Windows VM.
 
-```bash
-./proxmox-lab.sh windows-setup
-```
+To verify in Windows: `certmgr.msc` → Trusted Root Certification Authorities → Certificates.
 
-The script pushes both files to `C:\ProgramData\proxmox-lab\` on the target VM via QEMU guest agent and runs `setup-scheduled-tasks.ps1` to register M-F scheduled tasks for all five traffic profiles. The VM ID and script paths are saved to `~/.proxmox-lab.conf` for subsequent runs.
+**Step 3 — Install / Update Traffic Generator Script**
 
-To verify after setup, open Task Scheduler on the Windows VM and check for the registered lab tasks.
+Pushes `win-traffic.ps1` to `C:\ProgramData\proxmox-lab\` on each selected VM. Compares `$SCRIPT_VERSION` between the local file and the remote copy — skips VMs that are already up to date.
+
+The PS1 files (`win-traffic.ps1` and `setup-scheduled-tasks.ps1`) are downloaded automatically from GitHub the first time you enter the Windows Tools submenu, if they are not already present alongside `proxmox-lab.sh`. They are also updated automatically whenever you run `Update Lab Script` (option 9).
+
+**Step 4 — Configure Scheduled Tasks**
+
+Pushes `setup-scheduled-tasks.ps1` and runs it on each selected VM. Prompts for which profiles to install (office-worker, sales, developer, executive, threat — default: all). Existing lab tasks are always removed and recreated, so re-running with a different profile set removes orphaned tasks cleanly.
 
 ### Verification
 
