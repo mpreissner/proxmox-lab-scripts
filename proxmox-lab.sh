@@ -13,7 +13,7 @@ YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 CYAN='\033[0;36m'
 NC='\033[0m'
-VERSION="3.0.3"
+VERSION="3.0.4"
 
 CONFIG_FILE="${HOME}/.proxmox-lab.conf"
 if [ -f "$CONFIG_FILE" ]; then
@@ -3945,6 +3945,9 @@ cmd_windows_configure_tasks() {
       powershell.exe -ExecutionPolicy Bypass -NonInteractive \
       -File 'C:\ProgramData\proxmox-lab\setup-scheduled-tasks.ps1' \
       -Profiles "$PROFILE_ARG" >/dev/null 2>&1 || true
+
+    # Allow Task Scheduler service to commit newly registered tasks before querying
+    sleep 3
 
     # setup-scheduled-tasks.ps1 uses Write-Host throughout (host stream, not stdout),
     # so qm guest exec out-data is always empty — verify success by querying Task Scheduler

@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.0.4] - 2026-02-15
+
+### Fixed
+- `cmd_windows_configure_tasks`: scheduled task verification query ran immediately after the setup script exited. `Register-ScheduledTask` returns synchronously in PowerShell, but the Task Scheduler service commits the task to its internal store with a brief delay, causing `Get-ScheduledTask` to return null even for tasks that were successfully registered. Added a 3-second sleep between script execution and the verification query.
+
+---
+
 ## [3.0.3] - 2026-02-15
 
 ### Fixed
@@ -337,6 +344,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `browse_random()` invalid test operator (`-file` → `-f`) in `random-timing.sh`
 - `RUNNING_CONTAINERS` in `cmd_install_traffic_gen` now correctly filters to running containers only (`pct list` filtered by status field)
 
+[3.0.4]: https://github.com/mpreissner/proxmox-lab-scripts/compare/v3.0.3...v3.0.4
 [3.0.3]: https://github.com/mpreissner/proxmox-lab-scripts/compare/v3.0.2...v3.0.3
 [3.0.2]: https://github.com/mpreissner/proxmox-lab-scripts/compare/v3.0.1...v3.0.2
 [3.0.1]: https://github.com/mpreissner/proxmox-lab-scripts/compare/v3.0.0...v3.0.1
