@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.0.5] - 2026-02-15
+
+### Fixed
+- `_ensure_win_scripts`: existing PS1 files that predate `$SCRIPT_VERSION` (v2.x copies on the host) were silently kept because the function only checked for file presence, not version. Added `$SCRIPT_VERSION` presence check — files without it are treated as stale and re-fetched from GitHub, ensuring the host always has a versioned copy before Windows Tools operations run.
+- `cmd_windows_install_traffic`: install/update message showed `vunknown` when the local PS1 had no `$SCRIPT_VERSION` line. Changed to omit the version suffix if `local_ver` is empty rather than printing `unknown`.
+
+---
+
 ## [3.0.4] - 2026-02-15
 
 ### Fixed
@@ -344,6 +352,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `browse_random()` invalid test operator (`-file` → `-f`) in `random-timing.sh`
 - `RUNNING_CONTAINERS` in `cmd_install_traffic_gen` now correctly filters to running containers only (`pct list` filtered by status field)
 
+[3.0.5]: https://github.com/mpreissner/proxmox-lab-scripts/compare/v3.0.4...v3.0.5
 [3.0.4]: https://github.com/mpreissner/proxmox-lab-scripts/compare/v3.0.3...v3.0.4
 [3.0.3]: https://github.com/mpreissner/proxmox-lab-scripts/compare/v3.0.2...v3.0.3
 [3.0.2]: https://github.com/mpreissner/proxmox-lab-scripts/compare/v3.0.1...v3.0.2

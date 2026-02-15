@@ -13,7 +13,7 @@ YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 CYAN='\033[0;36m'
 NC='\033[0m'
-VERSION="3.0.4"
+VERSION="3.0.5"
 
 CONFIG_FILE="${HOME}/.proxmox-lab.conf"
 if [ -f "$CONFIG_FILE" ]; then
@@ -3838,9 +3838,9 @@ cmd_windows_install_traffic() {
     _win_vm_write_file "$_vm_node" "$vmid" "$WIN_TRAFFIC_PS1" 'C:\ProgramData\proxmox-lab\win-traffic.ps1'
 
     if [ "$remote_ver" = "none" ] || [ -z "$remote_ver" ]; then
-      echo -e "  ${GREEN}  ✓ Installed v${local_ver:-unknown}${NC}"
+      echo -e "  ${GREEN}  ✓ Installed${local_ver:+ v${local_ver}}${NC}"
     else
-      echo -e "  ${GREEN}  ✓ Updated v${remote_ver} → v${local_ver:-unknown}${NC}"
+      echo -e "  ${GREEN}  ✓ Updated v${remote_ver} → ${local_ver:-?}${NC}"
     fi
   done
 
@@ -3995,16 +3995,25 @@ _ensure_win_scripts() {
     configured_path="${!var_name}"
     default_path="${script_dir}/${filename}"
 
-    # Found at configured path — nothing to do
-    [ -n "$configured_path" ] && [ -f "$configured_path" ] && continue
-
-    # Found in script directory — update in-session var and move on
-    if [ -f "$default_path" ]; then
-      printf -v "$var_name" '%s' "$default_path"
-      continue
+    # Found at configured path — skip only if it already has $SCRIPT_VERSION
+    if [ -n "$configured_path" ] && [ -f "$configured_path" ]; then
+      if grep -q '^\$SCRIPT_VERSION' "$configured_path" 2>/dev/null; then
+        continue
+      fi
+      echo -e "  ${CYAN}${filename} predates versioning — fetching updated version...${NC}"
+      configured_path=""  # fall through to re-fetch
     fi
 
-    # Not found anywhere — fetch from GitHub
+    # Found in script directory — use it only if it has $SCRIPT_VERSION
+    if [ -f "$default_path" ]; then
+      if grep -q '^\$SCRIPT_VERSION' "$default_path" 2>/dev/null; then
+        printf -v "$var_name" '%s' "$default_path"
+        continue
+      fi
+      # File exists but predates versioning — fall through to overwrite
+    fi
+
+    # Not found, or found but stale — fetch from GitHub
     echo -e "  ${CYAN}${filename} not found — fetching from GitHub...${NC}"
     local tmp
     tmp=$(mktemp /tmp/proxmox-lab-ps1.XXXXXX)
