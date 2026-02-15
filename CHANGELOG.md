@@ -5,6 +5,67 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.0.4] - 2026-02-15
+
+### Fixed
+- `cmd_windows_configure_tasks`: scheduled task verification query ran immediately after the setup script exited. `Register-ScheduledTask` returns synchronously in PowerShell, but the Task Scheduler service commits the task to its internal store with a brief delay, causing `Get-ScheduledTask` to return null even for tasks that were successfully registered. Added a 3-second sleep between script execution and the verification query.
+
+---
+
+## [3.0.3] - 2026-02-15
+
+### Fixed
+- `cmd_windows_configure_tasks`: success detection always showed "Warning: check output above" even when tasks were created correctly. Root cause: `setup-scheduled-tasks.ps1` uses `Write-Host` throughout, which writes to PowerShell's host/console stream (not stdout). `qm guest exec` only captures fd1 (stdout), so `out-data` is always empty for Write-Host output. Replaced stdout-capture approach with a post-run `Get-ScheduledTask` query via `_win_exec_ps_capture` (which uses `Write-Output`) to verify the first selected task was registered; shows green tick or warning based on the query result.
+
+---
+
+## [3.0.2] - 2026-02-15
+
+### Fixed
+- `cmd_windows_configure_tasks`: `setup-scheduled-tasks.ps1` was copied to the VM on every run regardless of remote version. Added version check via `_win_script_version`; copy is now skipped when the remote version matches local. The script is always executed (profile selection may differ across runs).
+- `setup-scheduled-tasks.ps1`: `-Profiles` parameter received as a single comma-separated string when invoked via `qm guest exec -File`; PowerShell treated it as a one-element array, causing all `$Profiles -contains "profile-name"` checks to fail and every task to be skipped. Added normalization block to split on commas when a single-element comma-containing string is detected.
+- `cmd_windows_configure_tasks`: directory creation `qm guest exec` call was missing stdout suppression (leaked JSON). Changed `2>/dev/null` to `>/dev/null 2>&1`.
+- `cmd_windows_configure_tasks`: task execution now uses `--synchronous 1` and parses output via Python to display PowerShell output cleanly instead of raw JSON; success detection based on `registered successfully` in output rather than unconditional green tick.
+
+---
+
+## [3.0.1] - 2026-02-15
+
+### Fixed
+- `$SCRIPT_VERSION` in `win-traffic.ps1` and `setup-scheduled-tasks.ps1` was placed before `param()`, causing a PowerShell parse error (`The assignment expression is not valid`) when parameters were passed. Moved to immediately after the closing `)` of the `param()` block.
+- `_win_vm_write_file` JSON output from `qm guest exec --synchronous 1` leaked to the terminal during file transfers. Changed `2>/dev/null` to `>/dev/null 2>&1` on all non-capture `qm guest exec` calls.
+- `_win_script_version` always returned `"none"` because the `Select-String` regex pattern did not reliably match across line endings. Replaced with `Get-Content | Where-Object { $_ -like '*SCRIPT_VERSION*' } | Select-Object -First 1` and string split on `"` to extract the version value.
+- Certificate install cleanup used `cmd.exe /c del` which failed with `The filename, directory name, or volume label syntax is incorrect`. Replaced with `powershell.exe Remove-Item -Force -ErrorAction SilentlyContinue`.
+- VM selection in `_select_win_vms` and `cmd_tag_windows_vms` accepted list position numbers; changed to accept VMIDs directly.
+
+---
+
+## [3.0.0] - 2026-02-15
+
+### Added
+- Windows Tools submenu (menu option 6 / `./proxmox-lab.sh windows`) consolidating all Windows VM management with tag-based multi-VM discovery
+- `cmd_tag_windows_vms`: bulk-tags VMs with `lab-windows`; highlights VMs with 'win' in the name as candidates; marks already-tagged VMs; comma-separated multi-select or `all`
+- `_win_exec_ps_capture()`: runs a PowerShell one-liner via `qm guest exec --synchronous 1` and returns trimmed stdout from the JSON response; foundation for all idempotency checks
+- `_win_cert_installed()`: queries the Windows Trusted Root store for a SHA1 thumbprint; returns true if the cert is already installed
+- `_win_script_version()`: reads `$SCRIPT_VERSION` from a PS1 file on a remote Windows VM; enables version-aware script push
+- `_select_win_vms()`: discovers all VMs tagged `lab-windows` cluster-wide; numbered table with status; comma-separated multi-select or `all`
+- `_ensure_win_scripts()`: silently fetches `win-traffic.ps1` and `setup-scheduled-tasks.ps1` from GitHub when entering the Windows Tools submenu if they are not present on the host; saves alongside `proxmox-lab.sh`; no prompt required
+- `cmd_update` now also downloads `win-traffic.ps1` and `setup-scheduled-tasks.ps1` after updating the main script; uses the same immutable tag ref when a target version is specified
+- `$SCRIPT_VERSION = "3.0.0"` added to `win-traffic.ps1` and `setup-scheduled-tasks.ps1` for remote version comparison during idempotency checks
+- `setup-scheduled-tasks.ps1`: `-Profiles` parameter (default: all five) for selective task creation; each task registration block wrapped in `if ($Profiles -contains "profile-name")`; existing tasks always removed before recreation (orphan-safe)
+
+### Changed
+- `cmd_install_windows_cert` replaced by `cmd_windows_install_cert`: operates on all `lab-windows`-tagged VMs; skips VMs where the certificate thumbprint is already present in the Trusted Root store
+- `cmd_setup_windows_vm` split into `cmd_windows_install_traffic` (version-aware — skips if `$SCRIPT_VERSION` matches remote) and `cmd_windows_configure_tasks` (always re-runs; passes selected profiles via `-Profiles`)
+- Main menu: items 6 (Install Windows VM Certificate) and 7 (Setup Windows VM Traffic Generator) replaced by single item 6 (Windows Tools); items 8–12 renumbered to 7–11
+- CLI: `windows-cert` and `windows-setup` commands removed; `windows` added (opens the submenu)
+- `_load_ct_data` QEMU section now captures the `tags` field (previously emitted an empty fifth column, unused)
+
+### Removed
+- `WIN_VMID` config key: removed from `save_config()`; `_migrate_config()` strips it from existing configs on first v3.0.0 launch
+
+---
+
 ## [2.6.6] - 2026-02-14
 
 ### Fixed
@@ -283,6 +344,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `browse_random()` invalid test operator (`-file` → `-f`) in `random-timing.sh`
 - `RUNNING_CONTAINERS` in `cmd_install_traffic_gen` now correctly filters to running containers only (`pct list` filtered by status field)
 
+[3.0.4]: https://github.com/mpreissner/proxmox-lab-scripts/compare/v3.0.3...v3.0.4
+[3.0.3]: https://github.com/mpreissner/proxmox-lab-scripts/compare/v3.0.2...v3.0.3
+[3.0.2]: https://github.com/mpreissner/proxmox-lab-scripts/compare/v3.0.1...v3.0.2
+[3.0.1]: https://github.com/mpreissner/proxmox-lab-scripts/compare/v3.0.0...v3.0.1
+[3.0.0]: https://github.com/mpreissner/proxmox-lab-scripts/compare/v2.6.6...v3.0.0
 [2.2.1]: https://github.com/mpreissner/proxmox-lab-scripts/compare/v2.2.0...v2.2.1
 [2.2.0]: https://github.com/mpreissner/proxmox-lab-scripts/compare/v2.1.0...v2.2.0
 [2.1.0]: https://github.com/mpreissner/proxmox-lab-scripts/compare/v2.0.0...v2.1.0

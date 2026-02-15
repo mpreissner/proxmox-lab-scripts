@@ -28,6 +28,8 @@ param(
     [int]$DurationMinutes = 30
 )
 
+$SCRIPT_VERSION = "3.0.1"
+
 $ProgressPreference    = 'SilentlyContinue'
 $ErrorActionPreference = 'Continue'
 
