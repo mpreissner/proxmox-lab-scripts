@@ -41,7 +41,7 @@ A single interactive menu covering the full lab lifecycle.
 7. **Setup Windows VM Traffic Generator** — push `win-traffic.ps1` and `setup-scheduled-tasks.ps1` to a Windows VM and register scheduled tasks
 8. **Show Status** — view all containers with running state and traffic gen status at a glance
 9. **Update Container Packages** — run `apk update && apk upgrade` on all running lab containers in parallel
-10. **Update Lab Script** — check GitHub for a newer version, show changelog, and self-patch the script in place (also runs automatically on every interactive launch)
+10. **Update Lab Script** — check GitHub for a newer version, show changelog, prompt to confirm, then self-patch the script in place and exit. On every interactive launch, the same check runs automatically: if a newer release exists, the changelog is shown and the user is prompted to update immediately before the menu appears. The script always exits after a successful update so the new version is loaded on relaunch.
 11. **Stop Containers** — stop all running lab-managed containers
 12. **Exit**
 
@@ -68,6 +68,8 @@ A single interactive menu covering the full lab lifecycle.
 **Config persistence:**
 
 On first run, the script prompts for all values as usual. After completing any command, it offers to save the answers to `~/.proxmox-lab.conf`. On every subsequent run those values pre-populate all prompts — press Enter to accept, or type a new value to override. The config file survives script updates. The Full Setup Wizard auto-saves once at the end without prompting at each step.
+
+Key saved values include node selection, network bridge, CT disk storage pool (`STORAGE`), image storage pool (`IMAGE_STORAGE`), VLAN IDs, CTID ranges, template ID, TLS certificate path, and cron schedules.
 
 ---
 
@@ -103,6 +105,10 @@ Each step can also be run individually:
 ./proxmox-lab.sh install-traffic   # Step 4 — install traffic profiles
 ```
 
+### Image Storage
+
+During `create-template` (step 3b), the script prompts for the storage pool where the Alpine `.tar.xz` template image will be downloaded. Only pools with the `vztmpl` content type are listed. This is separate from the CT disk storage pool (step 3) — on most Proxmox hosts `local` is the correct choice for image storage. The selection is saved to `~/.proxmox-lab.conf` as `IMAGE_STORAGE`.
+
 ### TLS Inspection Certificate
 
 If your network performs TLS inspection (e.g., Zscaler), copy your root CA certificate to the Proxmox host before running `create-template`:
@@ -111,7 +117,7 @@ If your network performs TLS inspection (e.g., Zscaler), copy your root CA certi
 scp /path/to/ZscalerRootCertificate.crt root@<proxmox-host>:/root/
 ```
 
-During step 1 (`create-template`), the script prompts for the certificate path on the host. If provided, the certificate is installed into the template via Alpine's `update-ca-certificates`, and every cloned container inherits it automatically. The path is saved to `~/.proxmox-lab.conf` for subsequent runs.
+During `create-template` (step 7), the script prompts for the certificate path on the host. If provided, the certificate is installed into the template via Alpine's `update-ca-certificates`, and every cloned container inherits it automatically. The path is saved to `~/.proxmox-lab.conf` for subsequent runs.
 
 Zscaler offers a choice of using their built-in root certificate or uploading a custom one — either works. If you are not using TLS inspection, press Enter to skip.
 
