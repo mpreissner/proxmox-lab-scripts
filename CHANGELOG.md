@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [3.2.0] - 2026-02-17
+## [3.2.1] - 2026-02-17
 
 ### Added
 - **`lab-traffic.tsv`** — tab-separated data file driving all traffic generation. Replaces hardcoded URL lists, GenAI provider assignments, GenAI prompts, and security test assignments previously embedded as heredocs in `proxmox-lab.sh`. Four row types: `url`, `genai_provider`, `genai_prompt`, `security_test`. All row types support an `enabled` column (`yes`/`no`) for per-row toggle control without deleting entries. URL values stored without `https://` prefix; generator accepts both forms.
@@ -24,6 +24,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `_default_security_tests_for_profile()` now reads from TSV `_TSV_TESTS` data when loaded; falls back to hardcoded defaults if TSV is unavailable (e.g. first run before auto-fetch).
 - `genai_browse()` platform list updated (see Added above).
 - `cmd_update` supporting-file loop now covers three files: `win-traffic.ps1`, `setup-scheduled-tasks.ps1`, `lab-traffic.tsv`.
+
+### Fixed
+- `cmd_install_traffic_gen`: container enumeration now filters to `lab-managed`-tagged containers only. Previously showed and operated on all running containers cluster-wide, including unrelated production containers. Uses the same `_CT_TAGS` check applied by `cmd_show_status` and `cmd_system_cleanup`.
+- `cmd_install_traffic_gen`: added a styled tip above the "Proceed?" prompt explaining that `v` opens the profile viewer and security test toggle and that changes write back to `lab-traffic.tsv`. The option was previously a plain line that blended into the installation summary.
 
 ---
 

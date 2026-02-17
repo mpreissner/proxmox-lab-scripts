@@ -13,7 +13,7 @@ YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 CYAN='\033[0;36m'
 NC='\033[0m'
-VERSION="3.2.0"
+VERSION="3.2.1"
 
 CONFIG_FILE="${HOME}/.proxmox-lab.conf"
 if [ -f "$CONFIG_FILE" ]; then
@@ -2848,16 +2848,18 @@ cmd_install_traffic_gen() {
   _build_default_profiles
 
   RUNNING_CONTAINERS=$(for ctid in "${!_CT_NODE[@]}"; do
-    [ "${_CT_STATUS[$ctid]:-}" = "running" ] && echo "$ctid"
+    [ "${_CT_STATUS[$ctid]:-}" = "running" ] || continue
+    [[ "${_CT_TAGS[$ctid]:-}" == *"lab-managed"* ]] || continue
+    echo "$ctid"
   done | sort -n)
 
   if [ -z "$RUNNING_CONTAINERS" ]; then
-    echo -e "${RED}No running containers found!${NC}"
+    echo -e "${RED}No running lab-managed containers found!${NC}"
     echo "Please start containers first (option 3 from main menu)"
     return 1
   fi
 
-  echo "Running containers:"
+  echo "Running lab-managed containers:"
   for ctid in $RUNNING_CONTAINERS; do
     printf "  %-6s %-20s %-10s %-8s\n" \
       "$ctid" "${_CT_HOSTNAME[$ctid]:-?}" "${_CT_NODE[$ctid]:-?}" "running"
@@ -3142,7 +3144,8 @@ cmd_install_traffic_gen() {
   done
 
   echo ""
-  echo "  v) View / edit profiles (browser + security test toggles)"
+  echo -e "  ${CYAN}Tip: enter 'v' to review profile URLs, GenAI prompts, and enable or"
+  echo -e "  disable security tests before deploying. Changes write back to lab-traffic.tsv.${NC}"
   echo ""
   while true; do
     read -p "Proceed with installation? [y/N/v]: " confirm
