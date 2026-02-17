@@ -13,7 +13,7 @@ YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 CYAN='\033[0;36m'
 NC='\033[0m'
-VERSION="3.1.3"
+VERSION="3.2.1"
 
 CONFIG_FILE="${HOME}/.proxmox-lab.conf"
 if [ -f "$CONFIG_FILE" ]; then
@@ -74,6 +74,12 @@ section_header() {
 
 WIZARD_MODE=false
 
+# TSV-driven traffic data (populated by _load_tsv)
+declare -A _TSV_URLS=()
+declare -A _TSV_PROVIDERS=()
+declare -A _TSV_PROMPTS=()
+declare -A _TSV_TESTS=()
+
 save_config() {
   cat > "$CONFIG_FILE" <<EOF
 # proxmox-lab configuration — saved $(date)
@@ -96,6 +102,7 @@ CERT_PATH="${CERT_PATH:-}"
 WIN_TRAFFIC_PS1="${WIN_TRAFFIC_PS1:-/root/win-traffic.ps1}"
 WIN_SETUP_PS1="${WIN_SETUP_PS1:-/root/setup-scheduled-tasks.ps1}"
 CLONE_TYPE="${CLONE_TYPE:-full}"
+LAB_TRAFFIC_TSV="${LAB_TRAFFIC_TSV:-}"
 EOF
   echo -e "${GREEN}✓ Settings saved to ~/.proxmox-lab.conf${NC}"
 }
@@ -2028,8 +2035,157 @@ _build_default_profiles() {
   fi
 }
 
+# ============================================================
+# MODULE: TSV-Driven Traffic Data
+# ============================================================
+
+_ensure_lab_traffic_tsv() {
+  local script_dir
+  script_dir="$(dirname "$(realpath "$0")")"
+  local default_tsv="${script_dir}/lab-traffic.tsv"
+
+  # Already loaded and valid
+  if [ -f "${LAB_TRAFFIC_TSV:-}" ]; then
+    return 0
+  fi
+
+  # Found alongside the script
+  if [ -f "$default_tsv" ]; then
+    LAB_TRAFFIC_TSV="$default_tsv"
+    return 0
+  fi
+
+  # Fetch from GitHub
+  echo -e "  ${CYAN}lab-traffic.tsv not found — fetching from GitHub...${NC}"
+  local tmp
+  tmp=$(mktemp /tmp/proxmox-lab-tsv.XXXXXX)
+  if curl -fsSL --connect-timeout 10 --max-time 30 \
+      "https://raw.githubusercontent.com/mpreissner/proxmox-lab-scripts/main/lab-traffic.tsv" \
+      -o "$tmp" 2>/dev/null; then
+    mv "$tmp" "$default_tsv"
+    LAB_TRAFFIC_TSV="$default_tsv"
+    echo -e "  ${GREEN}✓ Saved to ${default_tsv}${NC}"
+    return 0
+  fi
+
+  rm -f "$tmp"
+  echo -e "  ${RED}✗ Could not download lab-traffic.tsv${NC}"
+  echo "    Place lab-traffic.tsv alongside proxmox-lab.sh and re-run."
+  return 1
+}
+
+_load_tsv() {
+  local tsv_file="$1"
+  [ -f "$tsv_file" ] || { echo -e "${RED}TSV file not found: ${tsv_file}${NC}"; return 1; }
+
+  # Reset arrays
+  _TSV_URLS=(); _TSV_PROVIDERS=(); _TSV_PROMPTS=(); _TSV_TESTS=()
+
+  local type profile value enabled
+  while IFS=$'\t' read -r type profile value enabled; do
+    # Skip blank lines and comments
+    [[ -z "$type" || "$type" == \#* ]] && continue
+    # Default enabled to yes; skip disabled rows
+    enabled="${enabled:-yes}"
+    [ "$enabled" = "no" ] && continue
+
+    case "$type" in
+      url)
+        value="${value#https://}"; value="${value#http://}"
+        _TSV_URLS[$profile]+="${value}"$'\n'
+        ;;
+      genai_provider)
+        _TSV_PROVIDERS[$profile]+="${value} "
+        ;;
+      genai_prompt)
+        _TSV_PROMPTS[$profile]+="${value}"$'\n'
+        ;;
+      security_test)
+        _TSV_TESTS[$profile]+="${value} "
+        ;;
+    esac
+  done < "$tsv_file"
+}
+
+# Returns the appropriate User-Agent for a given server profile domain.
+# Used at profile-script generation time — not at container runtime.
+_server_ua() {
+  local domain="$1"
+  case "$domain" in
+    # fileserver
+    onedrive.live.com)              echo "Microsoft OneDrive Sync 21.220.1024.0005 (Windows NT 10.0; Win64; x64)" ;;
+    dropbox.com)                    echo "Dropbox/164.4.3551 (Windows; 10; Pro)" ;;
+    # webapp
+    api.stripe.com)                 echo "Stripe-Node/12.18.0 (https://github.com/stripe/stripe-node)" ;;
+    cdn.jsdelivr.net)               echo "Mozilla/5.0 (compatible; WebServer/1.0)" ;;
+    cdnjs.cloudflare.com)           echo "Mozilla/5.0 (compatible; WebServer/1.0)" ;;
+    ocsp.digicert.com)              echo "OpenSSL/3.0.11" ;;
+    # email
+    outlook.office365.com)          echo "ExchangeWebServices/15.0.0 (Exchange)" ;;
+    mail.google.com)                echo "Postfix/3.8.1" ;;
+    spamhaus.org)                   echo "SpamAssassin/4.0.0" ;;
+    clamav.net)                     echo "ClamAV/1.2.0/27053" ;;
+    # monitoring
+    archive.ubuntu.com)             echo "Debian APT-HTTP/1.3 (2.6.1)" ;;
+    security.ubuntu.com)            echo "Debian APT-HTTP/1.3 (2.6.1)" ;;
+    api.datadoghq.com)              echo "datadog-agent/7.48.0" ;;
+    api.newrelic.com)               echo "NewRelic-Java-Agent/8.7.0 (java 17.0.9)" ;;
+    registry.hub.docker.com)        echo "docker/24.0.5 go/go1.20.6 kernel/5.15.0 os/linux arch/amd64" ;;
+    api.github.com)                 echo "GitHub-Actions/1.0" ;;
+    # devops
+    registry.npmjs.org)             echo "npm/10.2.0 node/v20.9.0 linux x64" ;;
+    pypi.org)                       echo "pip/23.3.1 python/3.11.5 linux/x86_64" ;;
+    github.com)                     echo "git/2.40.1" ;;
+    hub.docker.com)                 echo "docker/24.0.5 go/go1.20.6 kernel/5.15.0 os/linux arch/amd64" ;;
+    # database
+    aws.amazon.com)                 echo "aws-sdk-java/1.12.500 OpenJDK_64-Bit_Server_VM/11.0.19" ;;
+    s3.amazonaws.com)               echo "aws-cli/2.13.25 Python/3.11.5 Linux/5.15.0" ;;
+    azure.microsoft.com)            echo "azsdk-python-azure-mgmt-sql/4.0.0 Python/3.11.5" ;;
+    *)                              echo "curl/7.88.1" ;;
+  esac
+}
+
+_is_user_profile() {
+  case "$1" in
+    office-worker|sales|developer|executive) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+# Returns profile-appropriate UA pool lines (one UA string per line, already quoted)
+_profile_ua_pool() {
+  case "$1" in
+    office-worker)
+      printf '  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"\n'
+      printf '  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 Edg/120.0.0.0"\n'
+      printf '  "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"\n'
+      printf '  "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:121.0) Gecko/20100101 Firefox/121.0"\n'
+      ;;
+    sales)
+      printf '  "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.2 Safari/605.1.15"\n'
+      printf '  "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"\n'
+      printf '  "Mozilla/5.0 (iPhone; CPU iPhone OS 17_2 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.2 Mobile/15E148 Safari/604.1"\n'
+      ;;
+    developer)
+      printf '  "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"\n'
+      printf '  "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"\n'
+      printf '  "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:121.0) Gecko/20100101 Firefox/121.0"\n'
+      ;;
+    executive)
+      printf '  "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.2 Safari/605.1.15"\n'
+      printf '  "Mozilla/5.0 (iPad; CPU OS 17_2 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.2 Mobile/15E148 Safari/604.1"\n'
+      printf '  "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"\n'
+      ;;
+  esac
+}
+
 _default_security_tests_for_profile() {
   local profile="$1"
+  # If TSV data is loaded, use it; otherwise fall back to built-in defaults
+  if [ -n "${_TSV_TESTS[$profile]:-}" ]; then
+    echo "${_TSV_TESTS[$profile]}"
+    return
+  fi
   case "$profile" in
     fileserver)    echo "dlp-network" ;;
     devops)        echo "eicar dlp-genai-prompt dlp-genai-file dlp-genai-image" ;;
@@ -2248,53 +2404,82 @@ EOF
 
   run_on_node "$CT_NODE" pct exec $ctid -- bash -c 'cat > /opt/traffic-gen/utils/genai.sh' <<'EOF'
 #!/bin/bash
-# GenAI traffic utilities — realistic enterprise AI usage simulation
-
-GENAI_PROMPTS=(
-  "Summarize the key points of our Q3 financial performance for the board"
-  "Draft a professional email declining a vendor proposal politely"
-  "What are best practices for implementing zero-trust network architecture"
-  "Help me prepare talking points for a client presentation on data security"
-  "What are the main enterprise AI adoption trends this year"
-  "Write a brief project status update for executive stakeholders"
-  "Explain the ROI calculation methodology for cloud migration projects"
-  "Suggest agenda items for a quarterly business review meeting"
-  "What are the key compliance requirements for handling PII data"
-  "Summarize best practices for generative AI governance in enterprises"
-  "Draft a job description for a senior cloud security architect"
-  "What security controls should I implement for a hybrid cloud deployment"
-)
-
-genai_random_prompt() {
-  echo "${GENAI_PROMPTS[$((RANDOM % ${#GENAI_PROMPTS[@]}))]}"
-}
+# GenAI traffic utilities — web-endpoint based prompt submission
+# Prompts and provider selection are embedded in each profile script.
+# This file provides genai_browse() and genai_web_prompt().
 
 genai_browse() {
-  # Browse public GenAI platform pages (no CoPilot — websockets not supported)
+  # Browse public GenAI platform homepages (no Copilot — WebSockets; no Gemini — session auth wall)
   local platforms=(
-    "https://chat.openai.com"
-    "https://claude.ai"
-    "https://gemini.google.com"
-    "https://huggingface.co/chat"
+    "https://chatgpt.com"
     "https://www.perplexity.ai"
+    "https://chat.mistral.ai"
     "https://poe.com"
   )
   local platform="${platforms[$((RANDOM % ${#platforms[@]}))]}"
   local ua=$(random_user_agent)
   echo "[$(date)] GenAI: Browsing ${platform}"
-  curl -s -A "$ua" -m 10 -L "$platform" > /dev/null 2>&1 || true
+  curl -s -A "$ua" -m 15 -L "$platform" > /dev/null 2>&1 || true
 }
 
-genai_api_call() {
-  local prompt="${1:-What are best practices for enterprise security}"
-  # HuggingFace anonymous inference API — free tier, no auth required for basic models
-  # Zscaler inspects the outbound prompt regardless of rate-limit response
-  echo "[$(date)] GenAI: API call — ${prompt:0:60}..."
-  curl -s -m 15 \
-    -X POST \
-    -H "Content-Type: application/json" \
-    -d "{\"inputs\": \"${prompt}\"}" \
-    https://api-inference.huggingface.co/models/distilgpt2 > /dev/null 2>&1 || true
+genai_web_prompt() {
+  local provider="$1"
+  local prompt="$2"
+
+  # Escape prompt for JSON embedding
+  local jp
+  jp=$(printf '%s' "$prompt" | sed 's/\\/\\\\/g; s/"/\\"/g')
+
+  local u1 u2 u3
+  u1=$(cat /proc/sys/kernel/random/uuid)
+  u2=$(cat /proc/sys/kernel/random/uuid)
+  u3=$(cat /proc/sys/kernel/random/uuid)
+
+  echo "[$(date)] GenAI: ${provider} — ${prompt:0:60}..."
+
+  case "$provider" in
+    chatgpt)
+      # POST to chatgpt.com web app endpoint. Sentinel tokens are session-generated
+      # and cannot be faked; omitting them causes a 403. ZIA captures the outbound
+      # request body before the response arrives — prompt capture fires regardless.
+      curl -s -m 20 \
+        -X POST "https://chatgpt.com/backend-api/f/conversation" \
+        -H "Content-Type: application/json" \
+        -H "Accept: text/event-stream" \
+        -H "Authorization: Bearer lab-session-token" \
+        -H "Oai-Language: en-US" \
+        -H "Oai-Device-Id: ${u1}" \
+        -H "User-Agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36" \
+        -d "{\"action\":\"next\",\"messages\":[{\"id\":\"${u2}\",\"author\":{\"role\":\"user\"},\"content\":{\"content_type\":\"text\",\"parts\":[\"${jp}\"]},\"metadata\":{}}],\"conversation_id\":\"${u1}\",\"parent_message_id\":\"${u3}\",\"model\":\"auto\",\"timezone_offset_min\":300,\"timezone\":\"America/New_York\",\"conversation_mode\":{\"kind\":\"primary_assistant\"}}" \
+        > /dev/null 2>&1 || true
+      ;;
+    perplexity)
+      # POST to perplexity.ai web app SSE endpoint. No real auth required.
+      local rid
+      rid=$(cat /proc/sys/kernel/random/uuid)
+      curl -s -m 20 \
+        -X POST "https://www.perplexity.ai/rest/sse/perplexity_ask" \
+        -H "Content-Type: application/json" \
+        -H "Accept: text/event-stream" \
+        -H "X-Perplexity-Request-Reason: perplexity-query-state-provider" \
+        -H "X-Request-Id: ${rid}" \
+        -H "User-Agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36" \
+        -d "{\"params\":{\"dsl_query\":\"${jp}\",\"query_str\":\"${jp}\",\"language\":\"en-US\",\"timezone\":\"America/New_York\",\"search_focus\":\"internet\",\"sources\":[\"web\"],\"mode\":\"copilot\",\"model_preference\":\"turbo\",\"is_related_query\":false,\"frontend_uuid\":\"${u1}\"}}" \
+        > /dev/null 2>&1 || true
+      ;;
+    mistral)
+      # POST to Mistral chat web app tRPC endpoint. Anonymous sessions allowed.
+      curl -s -m 20 \
+        -X POST "https://chat.mistral.ai/api/trpc/message.newChat?batch=1" \
+        -H "Content-Type: application/json" \
+        -H "Accept: application/jsonl" \
+        -H "Trpc-Accept: application/jsonl" \
+        -H "X-Trpc-Source: nextjs-react" \
+        -H "User-Agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36" \
+        -d "{\"0\":{\"json\":{\"content\":[{\"type\":\"text\",\"text\":\"${jp}\"}],\"features\":[\"beta-websearch\"],\"incognito\":false}}}" \
+        > /dev/null 2>&1 || true
+      ;;
+  esac
 }
 EOF
 
@@ -2395,407 +2580,265 @@ _install_profile() {
   local ctid=$1
   local profile=$2
 
-  case "$profile" in
-    fileserver)
-      run_on_node "$CT_NODE" pct exec $ctid -- bash -c 'cat > /opt/traffic-gen/profiles/fileserver.sh' <<'EOF'
-#!/bin/bash
-source /opt/traffic-gen/utils/random-timing.sh
+  # Get TSV data for this profile
+  local raw_urls="${_TSV_URLS[$profile]:-}"
+  local raw_providers="${_TSV_PROVIDERS[$profile]:-}"
+  local raw_prompts="${_TSV_PROMPTS[$profile]:-}"
 
-HOUR=$(date +%H)
+  local -a urls=()
+  while IFS= read -r u; do
+    [ -n "$u" ] && urls+=("$u")
+  done <<< "$raw_urls"
 
-# Simulate file backup to cloud
-backup_to_cloud() {
-  echo "[$(date)] File server: Cloud backup sync"
+  local -a providers=()
+  [ -n "$raw_providers" ] && read -ra providers <<< "$raw_providers"
 
-  # OneDrive sync
-  curl -s -A "Microsoft OneDrive Sync 21.220.1024.0005 (Windows NT 10.0; Win64; x64)" https://onedrive.live.com > /dev/null 2>&1
+  local -a prompts=()
+  while IFS= read -r p; do
+    [ -n "$p" ] && prompts+=("$p")
+  done <<< "$raw_prompts"
 
-  # Dropbox sync
-  curl -s -A "Dropbox/164.4.3551 (Windows; 10; Pro)" https://www.dropbox.com > /dev/null 2>&1
+  if [ ${#urls[@]} -eq 0 ]; then
+    echo -e "    ${YELLOW}⚠ No URLs in TSV for profile '${profile}' — skipping${NC}"
+    return 0
+  fi
 
-  # (DLP tests handled by security-tests/dlp-network.sh if enabled)
+  # Build the profile script content
+  local script
+  script='#!/bin/bash'$'\n'
+
+  if _is_user_profile "$profile"; then
+    script+='source /opt/traffic-gen/utils/business-hours.sh 2>/dev/null || true'$'\n'
+    script+='source /opt/traffic-gen/utils/random-timing.sh'$'\n'
+    [ ${#providers[@]} -gt 0 ] && \
+      script+='source /opt/traffic-gen/utils/genai.sh 2>/dev/null || true'$'\n'
+    script+=$'\n'
+
+    script+='UA_POOL=('$'\n'
+    while IFS= read -r ua_line; do
+      script+="${ua_line}"$'\n'
+    done < <(_profile_ua_pool "$profile")
+    script+=')'$'\n'
+    script+='UA="${UA_POOL[$((RANDOM % ${#UA_POOL[@]}))]}"'$'\n'
+    script+=$'\n'
+
+    script+='if ! is_business_hours; then'$'\n'
+    script+='  exit 0'$'\n'
+    script+='fi'$'\n'
+    script+=$'\n'
+
+    script+="echo \"[\$(date)] ${profile}: browsing\""$'\n'
+    script+=$'\n'
+
+    for url in "${urls[@]}"; do
+      script+="curl -s -A \"\$UA\" -m 15 -L https://${url} > /dev/null 2>&1 || true"$'\n'
+      script+='sleep $(random_delay 5 20)'$'\n'
+    done
+
+  else
+    script+='source /opt/traffic-gen/utils/random-timing.sh'$'\n'
+    [ ${#providers[@]} -gt 0 ] && \
+      script+='source /opt/traffic-gen/utils/genai.sh 2>/dev/null || true'$'\n'
+    script+=$'\n'
+
+    script+="echo \"[\$(date)] ${profile}: activity\""$'\n'
+    script+=$'\n'
+
+    for url in "${urls[@]}"; do
+      local ua
+      ua="$(_server_ua "$url")"
+      script+="curl -s -A \"${ua}\" -m 10 https://${url} > /dev/null 2>&1 || true"$'\n'
+      script+='sleep $(random_delay 5 15)'$'\n'
+    done
+  fi
+
+  # GenAI block
+  if [ ${#providers[@]} -gt 0 ] && [ ${#prompts[@]} -gt 0 ]; then
+    script+=$'\n'
+    script+='# GenAI usage'$'\n'
+
+    script+='GENAI_PROVIDERS=('
+    for p in "${providers[@]}"; do
+      script+="\"${p}\" "
+    done
+    script+=')'$'\n'
+
+    script+='GENAI_PROMPTS=('$'\n'
+    for prompt in "${prompts[@]}"; do
+      prompt="${prompt//\\/\\\\}"
+      prompt="${prompt//\"/\\\"}"
+      script+="  \"${prompt}\""$'\n'
+    done
+    script+=')'$'\n'
+
+    script+='if [ $((RANDOM % 2)) -eq 0 ]; then'$'\n'
+    script+='  _P="${GENAI_PROVIDERS[$((RANDOM % ${#GENAI_PROVIDERS[@]}))]}"'$'\n'
+    script+='  _Q="${GENAI_PROMPTS[$((RANDOM % ${#GENAI_PROMPTS[@]}))]}"'$'\n'
+    script+='  genai_web_prompt "$_P" "$_Q"'$'\n'
+    script+='fi'$'\n'
+  fi
+
+  printf '%s\n' "$script" | \
+    run_on_node "$CT_NODE" pct exec $ctid -- bash -c \
+      "cat > /opt/traffic-gen/profiles/${profile}.sh && chmod +x /opt/traffic-gen/profiles/${profile}.sh"
 }
 
-# Nightly backup (2-4 AM)
-if [ $HOUR -ge 2 ] && [ $HOUR -lt 4 ]; then
-  echo "[$(date)] File server: Nightly backup window"
-  backup_to_cloud
-  sleep $(random_delay 60 180)
-fi
+# ============================================================
+# MODULE: TSV Profile Viewer / Security Test Toggle
+# ============================================================
 
-# Regular sync during day
-backup_to_cloud
-sleep $(random_delay 30 90)
-
-# AWS S3 simulation
-curl -s -A "aws-cli/2.13.25 Python/3.11.5 Windows/10 exe/AMD64" https://s3.amazonaws.com > /dev/null 2>&1
-EOF
-      ;;
-
-    webapp)
-      run_on_node "$CT_NODE" pct exec $ctid -- bash -c 'cat > /opt/traffic-gen/profiles/webapp.sh' <<'EOF'
-#!/bin/bash
-source /opt/traffic-gen/utils/random-timing.sh
-
-echo "[$(date)] Web app: External API calls"
-
-# Payment processor
-curl -s -A "Stripe-Node/12.18.0 (https://github.com/stripe/stripe-node)" https://api.stripe.com > /dev/null 2>&1
-sleep $(random_delay 5 15)
-
-# CDN assets
-curl -s -A "Mozilla/5.0 (compatible; WebServer/1.0; +http://example.com)" https://cdn.jsdelivr.net > /dev/null 2>&1
-curl -s -A "Mozilla/5.0 (compatible; WebServer/1.0; +http://example.com)" https://cdnjs.cloudflare.com > /dev/null 2>&1
-
-# Certificate validation
-curl -s -A "OpenSSL/1.1.1" http://ocsp.digicert.com > /dev/null 2>&1
-
-# Database backup to S3
-if [ $((RANDOM % 20)) -eq 0 ]; then
-  echo "[$(date)] Web app: S3 backup"
-  curl -s -A "aws-cli/2.13.25 Python/3.11.5 Linux/x86_64" https://s3.amazonaws.com > /dev/null 2>&1
-fi
-EOF
-      ;;
-
-    email)
-      run_on_node "$CT_NODE" pct exec $ctid -- bash -c 'cat > /opt/traffic-gen/profiles/email.sh' <<'EOF'
-#!/bin/bash
-source /opt/traffic-gen/utils/random-timing.sh
-
-echo "[$(date)] Email server: Mail relay operations"
-
-# Office 365 SMTP relay
-curl -s -A "Microsoft Exchange Server 2019" https://outlook.office365.com > /dev/null 2>&1
-sleep $(random_delay 10 30)
-
-# Google Workspace
-curl -s -A "Postfix/3.7.2" https://mail.google.com > /dev/null 2>&1
-
-# Spam filter updates
-curl -s -A "SpamAssassin/3.4.6" https://www.spamhaus.org > /dev/null 2>&1
-
-# Anti-virus definitions
-curl -s -A "ClamAV/1.0.3" https://www.clamav.net > /dev/null 2>&1
-EOF
-      ;;
-
-    monitoring)
-      run_on_node "$CT_NODE" pct exec $ctid -- bash -c 'cat > /opt/traffic-gen/profiles/monitoring.sh' <<'EOF'
-#!/bin/bash
-source /opt/traffic-gen/utils/random-timing.sh
-
-echo "[$(date)] Monitoring: System checks"
-
-# Ubuntu/Debian repos
-curl -s -A "Debian APT-HTTP/1.3 (2.6.1) non-interactive" http://archive.ubuntu.com/ubuntu > /dev/null 2>&1
-curl -s -A "Debian APT-HTTP/1.3 (2.6.1) non-interactive" http://security.ubuntu.com/ubuntu > /dev/null 2>&1
-
-# Monitoring services
-curl -s -A "Datadog Agent/7.47.0" https://api.datadoghq.com > /dev/null 2>&1
-curl -s -A "NewRelic-PythonAgent/8.10.0 (Python 3.11.5; Linux)" https://api.newrelic.com > /dev/null 2>&1
-
-# Container registry
-curl -s -A "docker/24.0.5 go/go1.20.6 git-commit/ced0996 kernel/5.15.0 os/linux arch/amd64" https://registry.hub.docker.com > /dev/null 2>&1
-
-# GitHub API
-curl -s -A "GitHubActions/1.0" https://api.github.com > /dev/null 2>&1
-EOF
-      ;;
-
-    devops)
-      run_on_node "$CT_NODE" pct exec $ctid -- bash -c 'cat > /opt/traffic-gen/profiles/devops.sh' <<'EOF'
-#!/bin/bash
-source /opt/traffic-gen/utils/random-timing.sh
-source /opt/traffic-gen/utils/genai.sh 2>/dev/null || true
-
-echo "[$(date)] DevOps: Build pipeline activity"
-
-# npm packages
-curl -s -A "npm/10.2.0 node/v20.9.0 linux x64 workspaces/false" https://registry.npmjs.org > /dev/null 2>&1
-sleep $(random_delay 5 15)
-
-# PyPI
-curl -s -A "pip/23.3.1 {\"ci\":null,\"cpu\":\"x86_64\",\"distro\":{\"name\":\"Ubuntu\",\"version\":\"22.04\"}}" https://pypi.org > /dev/null 2>&1
-
-# GitHub
-curl -s -A "git/2.40.1" https://github.com > /dev/null 2>&1
-curl -s -A "GitHub-Actions/1.0" https://api.github.com > /dev/null 2>&1
-
-# Docker Hub
-curl -s -A "docker/24.0.5 go/go1.20.6 git-commit/ced0996 kernel/5.15.0 os/linux arch/amd64" https://hub.docker.com > /dev/null 2>&1
-
-# GenAI — devops uses AI for automation scripts and documentation
-if [ $((RANDOM % 3)) -eq 0 ]; then
-  genai_browse
-fi
-if [ $((RANDOM % 2)) -eq 0 ]; then
-  genai_api_call "$(genai_random_prompt)"
-fi
-# (AV/EICAR tests handled by security-tests/eicar.sh if enabled)
-EOF
-      ;;
-
-    database)
-      run_on_node "$CT_NODE" pct exec $ctid -- bash -c 'cat > /opt/traffic-gen/profiles/database.sh' <<'EOF'
-#!/bin/bash
-source /opt/traffic-gen/utils/random-timing.sh
-
-echo "[$(date)] Database: Backup and replication"
-
-# Cloud database services
-curl -s -A "aws-sdk-java/1.12.500 Linux/5.15.0-86-generic OpenJDK_64-Bit_Server_VM/11.0.19" https://aws.amazon.com/rds > /dev/null 2>&1
-sleep $(random_delay 10 30)
-
-# Backup to S3
-curl -s -A "Boto3/1.28.57 Python/3.11.5 Linux/5.15.0-86-generic Botocore/1.31.57" https://s3.amazonaws.com > /dev/null 2>&1
-
-# Azure SQL
-curl -s -A "azsdk-python-azure-mgmt-sql/4.0.0 Python/3.11.5 (Linux-5.15.0-86-generic-x86_64)" https://azure.microsoft.com > /dev/null 2>&1
-EOF
-      ;;
-
-    office-worker)
-      run_on_node "$CT_NODE" pct exec $ctid -- bash -c 'cat > /opt/traffic-gen/domains/office-worker.txt' <<'EOF'
-https://outlook.office365.com
-https://teams.microsoft.com
-https://sharepoint.com
-https://docs.google.com
-https://drive.google.com
-https://www.salesforce.com
-https://slack.com
-https://zoom.us
-https://www.linkedin.com
-https://www.cnn.com
-https://www.bbc.com
-https://www.npr.org
-https://www.nytimes.com
-https://weather.com
-https://www.amazon.com
-https://www.reddit.com
-https://www.espn.com
-https://www.indeed.com
-https://www.bankofamerica.com
-https://www.chase.com
-EOF
-
-      run_on_node "$CT_NODE" pct exec $ctid -- bash -c 'cat > /opt/traffic-gen/profiles/office-worker.sh' <<'EOF'
-#!/bin/bash
-source /opt/traffic-gen/utils/business-hours.sh
-source /opt/traffic-gen/utils/random-timing.sh
-
-DOMAINS=/opt/traffic-gen/domains/office-worker.txt
-
-UA_POOL=(
-  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36"
-  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36 Edg/119.0.0.0"
-  "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36"
-  "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:120.0) Gecko/20100101 Firefox/120.0"
-)
-UA="${UA_POOL[$((RANDOM % ${#UA_POOL[@]}))]}"
-
-if ! is_business_hours; then
-  if [ $((RANDOM % 4)) -eq 0 ]; then
-    echo "[$(date)] Office worker: After-hours email check"
-    curl -s -A "$UA" https://outlook.office365.com > /dev/null 2>&1
+_tsv_toggle_test() {
+  local tsv_file="$1"
+  local profile="$2"
+  local test_name="$3"
+  # Flip yes→no or no→yes for the matching security_test row
+  # Must match tab-separated line: security_test<TAB>profile<TAB>test_name<TAB>yes|no
+  local pat="^security_test	${profile}	${test_name}	"
+  if grep -q "${pat}yes$" "$tsv_file" 2>/dev/null; then
+    sed -i "s/^\(security_test	${profile}	${test_name}	\)yes$/\1no/" "$tsv_file"
+    echo -e "  ${YELLOW}[OFF]${NC} ${test_name}"
+  elif grep -q "${pat}no$" "$tsv_file" 2>/dev/null; then
+    sed -i "s/^\(security_test	${profile}	${test_name}	\)no$/\1yes/" "$tsv_file"
+    echo -e "  ${GREEN}[ON]${NC}  ${test_name}"
+  else
+    echo -e "  ${YELLOW}⚠ ${test_name} not found in TSV for profile ${profile}${NC}"
   fi
-  exit 0
-fi
+}
 
-HOUR=$(date +%H)
-
-echo "[$(date)] Office worker: Business hours activity (Hour: $HOUR)"
-
-# Morning routine (8-10am)
-if [ $HOUR -ge 8 ] && [ $HOUR -lt 10 ]; then
-  curl -s -A "$UA" https://outlook.office365.com > /dev/null 2>&1
-  sleep $(random_delay 5 15)
-  browse_random "$DOMAINS" 2
-
-# Lunch time (12-1pm) - personal browsing
-elif is_lunch_time; then
-  echo "[$(date)] Office worker: Lunch time personal browsing"
-  curl -s -A "$UA" https://www.amazon.com > /dev/null 2>&1
-  sleep $(random_delay 5 10)
-  curl -s -A "$UA" https://www.facebook.com > /dev/null 2>&1 || true
-  curl -s -A "$UA" https://www.youtube.com > /dev/null 2>&1
-  browse_random "$DOMAINS" 3
-
-# Regular work hours
-else
-  curl -s -A "$UA" https://www.salesforce.com > /dev/null 2>&1
-  sleep $(random_delay 5 15)
-  curl -s -A "$UA" https://slack.com > /dev/null 2>&1
-  curl -s -A "$UA" https://docs.google.com > /dev/null 2>&1
-  browse_random "$DOMAINS" 2
-  # (Policy violation tests handled by security-tests/policy-violation.sh if enabled)
-fi
-EOF
-      ;;
-
-    sales)
-      run_on_node "$CT_NODE" pct exec $ctid -- bash -c 'cat > /opt/traffic-gen/profiles/sales.sh' <<'EOF'
-#!/bin/bash
-source /opt/traffic-gen/utils/business-hours.sh
-source /opt/traffic-gen/utils/random-timing.sh
-source /opt/traffic-gen/utils/genai.sh 2>/dev/null || true
-
-if ! is_business_hours; then
-  exit 0
-fi
-
-echo "[$(date)] Sales: CRM and prospecting activity"
-
-UA_POOL=(
-  "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.1 Safari/605.1.15"
-  "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36"
-  "Mozilla/5.0 (Macintosh; Intel Mac OS X 13_6) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15"
-)
-UA="${UA_POOL[$((RANDOM % ${#UA_POOL[@]}))]}"
-
-curl -s -A "$UA" https://www.salesforce.com > /dev/null 2>&1
-sleep $(random_delay 10 20)
-
-curl -s -A "$UA" https://www.linkedin.com > /dev/null 2>&1
-sleep $(random_delay 5 15)
-
-curl -s -A "$UA" https://www.expedia.com > /dev/null 2>&1
-curl -s -A "$UA" https://zoom.us > /dev/null 2>&1
-curl -s -A "$UA" https://www.hubspot.com > /dev/null 2>&1
-
-# GenAI — sales uses AI to draft outreach, research prospects, prep for calls
-if [ $((RANDOM % 2)) -eq 0 ]; then
-  genai_browse
-fi
-genai_api_call "$(genai_random_prompt)"
-EOF
-      ;;
-
-    developer)
-      run_on_node "$CT_NODE" pct exec $ctid -- bash -c 'cat > /opt/traffic-gen/profiles/developer.sh' <<'EOF'
-#!/bin/bash
-source /opt/traffic-gen/utils/business-hours.sh
-source /opt/traffic-gen/utils/random-timing.sh
-source /opt/traffic-gen/utils/genai.sh 2>/dev/null || true
-
-if ! is_business_hours; then
-  if [ $((RANDOM % 3)) -eq 0 ]; then
-    echo "[$(date)] Developer: After-hours coding"
-    curl -s -A "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36" https://github.com > /dev/null 2>&1
+_tsv_viewer() {
+  local tsv_file="${LAB_TRAFFIC_TSV:-}"
+  if [ ! -f "$tsv_file" ]; then
+    echo -e "${RED}lab-traffic.tsv not available — viewer requires TSV file${NC}"
+    return 0
   fi
-  exit 0
-fi
 
-echo "[$(date)] Developer: Development activity"
+  # Build list of profiles that have data in the TSV
+  local all_profiles=()
+  local p
+  for p in fileserver webapp email monitoring devops database \
+            office-worker sales developer executive; do
+    [ -n "${_TSV_URLS[$p]:-}" ] && all_profiles+=("$p")
+  done
 
-UA_POOL=(
-  "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36"
-  "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:120.0) Gecko/20100101 Firefox/120.0"
-  "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36"
-  "Mozilla/5.0 (X11; Ubuntu; Linux x86_64; rv:120.0) Gecko/20100101 Firefox/120.0"
-)
-UA="${UA_POOL[$((RANDOM % ${#UA_POOL[@]}))]}"
+  if [ ${#all_profiles[@]} -eq 0 ]; then
+    echo -e "${YELLOW}No profile data loaded from TSV.${NC}"
+    return 0
+  fi
 
-# Code repositories — alternate browser and git CLI
-if [ $((RANDOM % 2)) -eq 0 ]; then
-  curl -s -A "git/2.42.0" https://github.com > /dev/null 2>&1
-else
-  curl -s -A "$UA" https://github.com > /dev/null 2>&1
-fi
-sleep $(random_delay 10 30)
+  while true; do
+    echo ""
+    echo -e "${BLUE}  Profile Viewer${NC}"
+    echo ""
+    local i=1
+    for p in "${all_profiles[@]}"; do
+      printf "    %2d) %s\n" "$i" "$p"
+      ((i++))
+    done
+    echo ""
+    echo "    b) Back"
+    echo ""
+    read -p "  Select profile [1-${#all_profiles[@]}] or b: " psel
+    [[ "$psel" =~ ^[bBqQ]$ ]] && return 0
+    if ! [[ "$psel" =~ ^[0-9]+$ ]] || [ "$psel" -lt 1 ] || [ "$psel" -gt "${#all_profiles[@]}" ]; then
+      echo -e "${RED}Invalid selection${NC}"; continue
+    fi
+    local profile="${all_profiles[$((psel-1))]}"
 
-curl -s -A "$UA" https://stackoverflow.com > /dev/null 2>&1
+    while true; do
+      echo ""
+      echo -e "${BLUE}  Profile: ${profile}${NC}"
+      echo ""
 
-# Package managers — CLI agents
-curl -s -A "npm/10.2.0 node/v20.9.0 darwin arm64" https://registry.npmjs.org > /dev/null 2>&1
-sleep $(random_delay 5 15)
+      # URLs
+      echo -e "  ${CYAN}URLs:${NC}"
+      while IFS= read -r u; do
+        [ -n "$u" ] && printf "    https://%s\n" "$u"
+      done <<< "${_TSV_URLS[$profile]:-}"
 
-curl -s -A "pip/23.3.1" https://pypi.org > /dev/null 2>&1
+      # Providers
+      if [ -n "${_TSV_PROVIDERS[$profile]:-}" ]; then
+        echo ""
+        echo -e "  ${CYAN}GenAI Providers:${NC}"
+        for prov in ${_TSV_PROVIDERS[$profile]}; do
+          printf "    %s\n" "$prov"
+        done
+      fi
 
-curl -s -A "$UA" https://console.aws.amazon.com > /dev/null 2>&1
+      # Prompts
+      if [ -n "${_TSV_PROMPTS[$profile]:-}" ]; then
+        echo ""
+        echo -e "  ${CYAN}GenAI Prompts:${NC}"
+        local pidx=1
+        while IFS= read -r pr; do
+          [ -n "$pr" ] && printf "    %2d. %s\n" "$pidx" "$pr"
+          ((pidx++))
+        done <<< "${_TSV_PROMPTS[$profile]:-}"
+      fi
 
-curl -s -A "docker/24.0.5 go/go1.21.3 darwin/arm64" https://hub.docker.com > /dev/null 2>&1
+      # Security tests (read directly from TSV to show enabled/disabled state)
+      echo ""
+      echo -e "  ${CYAN}Security Tests (toggle to enable/disable):${NC}"
+      local test_names=()
+      local test_states=()
+      while IFS=$'\t' read -r type pf val en; do
+        [[ -z "$type" || "$type" == \#* ]] && continue
+        [ "$type" = "security_test" ] || continue
+        [ "$pf" = "$profile" ] || continue
+        test_names+=("$val")
+        test_states+=("${en:-yes}")
+      done < "$tsv_file"
 
-# GenAI — developers are heavy AI coding assistant users
-genai_api_call "$(genai_random_prompt)"
-if [ $((RANDOM % 2)) -eq 0 ]; then
-  genai_browse
-fi
-EOF
-      ;;
+      if [ ${#test_names[@]} -eq 0 ]; then
+        echo "    (none)"
+      else
+        local tidx=1
+        for tn in "${test_names[@]}"; do
+          local state="${test_states[$((tidx-1))]}"
+          if [ "$state" = "yes" ]; then
+            printf "    %2d) ${GREEN}[ON] ${NC} %s\n" "$tidx" "$tn"
+          else
+            printf "    %2d) ${YELLOW}[OFF]${NC} %s\n" "$tidx" "$tn"
+          fi
+          ((tidx++))
+        done
+      fi
 
-    executive)
-      run_on_node "$CT_NODE" pct exec $ctid -- bash -c 'cat > /opt/traffic-gen/domains/executive.txt' <<'EOF'
-https://www.wsj.com
-https://www.bloomberg.com
-https://www.ft.com
-https://www.reuters.com
-https://www.cnbc.com
-https://www.businessinsider.com
-https://hbr.org
-https://www.economist.com
-https://www.forbes.com
-https://www.linkedin.com
-https://zoom.us
-https://teams.microsoft.com
-https://outlook.office365.com
-https://www.united.com
-https://www.delta.com
-https://www.marriott.com
-https://www.hilton.com
-https://www.amextravel.com
-https://www.apple.com
-https://www.salesforce.com
-EOF
-
-      run_on_node "$CT_NODE" pct exec $ctid -- bash -c 'cat > /opt/traffic-gen/profiles/executive.sh' <<'EOF'
-#!/bin/bash
-source /opt/traffic-gen/utils/business-hours.sh
-source /opt/traffic-gen/utils/random-timing.sh
-source /opt/traffic-gen/utils/genai.sh 2>/dev/null || true
-
-DOMAINS=/opt/traffic-gen/domains/executive.txt
-
-if ! is_business_hours; then
-  exit 0
-  # (After-hours UEBA handled by security-tests/ueba.sh if enabled)
-fi
-
-echo "[$(date)] Executive: Light usage pattern"
-
-UA_POOL=(
-  "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.1 Safari/605.1.15"
-  "Mozilla/5.0 (Macintosh; Intel Mac OS X 13_6) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15"
-)
-UA="${UA_POOL[$((RANDOM % ${#UA_POOL[@]}))]}"
-
-curl -s -A "$UA" https://outlook.office365.com > /dev/null 2>&1
-sleep $(random_delay 15 45)
-
-curl -s -A "$UA" https://www.wsj.com > /dev/null 2>&1
-curl -s -A "$UA" https://www.bloomberg.com > /dev/null 2>&1
-browse_random "$DOMAINS" 3
-
-genai_browse
-if [ $((RANDOM % 2)) -eq 0 ]; then
-  genai_api_call "$(genai_random_prompt)"
-fi
-
-curl -s -A "$UA" https://zoom.us > /dev/null 2>&1
-
-if [ $((RANDOM % 5)) -eq 0 ]; then
-  curl -s -A "$UA" https://www.united.com > /dev/null 2>&1
-fi
-EOF
-      ;;
-  esac
-
-  run_on_node "$CT_NODE" pct exec $ctid -- chmod +x /opt/traffic-gen/profiles/${profile}.sh
+      echo ""
+      echo "    t) Toggle a security test"
+      echo "    b) Back to profile list"
+      echo ""
+      read -p "  Select [t/b]: " vsel
+      case "$vsel" in
+        t|T)
+          if [ ${#test_names[@]} -eq 0 ]; then
+            echo -e "${YELLOW}No security tests defined for this profile.${NC}"
+          else
+            read -p "  Enter test number to toggle: " tnum
+            if [[ "$tnum" =~ ^[0-9]+$ ]] && [ "$tnum" -ge 1 ] && [ "$tnum" -le "${#test_names[@]}" ]; then
+              local tname="${test_names[$((tnum-1))]}"
+              _tsv_toggle_test "$tsv_file" "$profile" "$tname"
+              # Reload TSV data to reflect the change
+              _load_tsv "$tsv_file"
+            else
+              echo -e "${RED}Invalid selection${NC}"
+            fi
+          fi
+          ;;
+        b|B|q|Q) break ;;
+        *) echo -e "${RED}Invalid selection${NC}" ;;
+      esac
+    done
+  done
 }
 
 cmd_install_traffic_gen() {
   _load_config
   section_header "Traffic Generator Installation"
+
+  # Load traffic data TSV
+  echo "Loading traffic data..."
+  _ensure_lab_traffic_tsv || return 1
+  _load_tsv "$LAB_TRAFFIC_TSV"
 
   # 1. Container Selection
   echo -e "${BLUE}1. Container Selection${NC}"
@@ -2805,16 +2848,18 @@ cmd_install_traffic_gen() {
   _build_default_profiles
 
   RUNNING_CONTAINERS=$(for ctid in "${!_CT_NODE[@]}"; do
-    [ "${_CT_STATUS[$ctid]:-}" = "running" ] && echo "$ctid"
+    [ "${_CT_STATUS[$ctid]:-}" = "running" ] || continue
+    [[ "${_CT_TAGS[$ctid]:-}" == *"lab-managed"* ]] || continue
+    echo "$ctid"
   done | sort -n)
 
   if [ -z "$RUNNING_CONTAINERS" ]; then
-    echo -e "${RED}No running containers found!${NC}"
+    echo -e "${RED}No running lab-managed containers found!${NC}"
     echo "Please start containers first (option 3 from main menu)"
     return 1
   fi
 
-  echo "Running containers:"
+  echo "Running lab-managed containers:"
   for ctid in $RUNNING_CONTAINERS; do
     printf "  %-6s %-20s %-10s %-8s\n" \
       "$ctid" "${_CT_HOSTNAME[$ctid]:-?}" "${_CT_NODE[$ctid]:-?}" "running"
@@ -3099,12 +3144,20 @@ cmd_install_traffic_gen() {
   done
 
   echo ""
-  read -p "Proceed with installation? [y/N]: " confirm
-
-  if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
-    echo "Aborted by user"
-    return 0
-  fi
+  echo -e "  ${CYAN}Tip: enter 'v' to review profile URLs, GenAI prompts, and enable or"
+  echo -e "  disable security tests before deploying. Changes write back to lab-traffic.tsv.${NC}"
+  echo ""
+  while true; do
+    read -p "Proceed with installation? [y/N/v]: " confirm
+    if [[ "$confirm" =~ ^[vV]$ ]]; then
+      _tsv_viewer
+    elif [[ "$confirm" =~ ^[Yy]$ ]]; then
+      break
+    else
+      echo "Aborted by user"
+      return 0
+    fi
+  done
 
   echo ""
   echo -e "${GREEN}Starting installation...${NC}"
@@ -3517,13 +3570,13 @@ cmd_update() {
   else
     ps1_base="https://raw.githubusercontent.com/mpreissner/proxmox-lab-scripts/main"
   fi
-  echo "  Updating PowerShell scripts..."
-  for ps1_file in "win-traffic.ps1" "setup-scheduled-tasks.ps1"; do
-    ps1_dest="${script_dir}/${ps1_file}"
-    if curl -fsSL --connect-timeout 10 "${ps1_base}/${ps1_file}" -o "$ps1_dest" 2>/dev/null; then
-      echo -e "  ${GREEN}✓ ${ps1_file}${NC}"
+  echo "  Updating supporting files..."
+  for extra_file in "win-traffic.ps1" "setup-scheduled-tasks.ps1" "lab-traffic.tsv"; do
+    local extra_dest="${script_dir}/${extra_file}"
+    if curl -fsSL --connect-timeout 10 "${ps1_base}/${extra_file}" -o "$extra_dest" 2>/dev/null; then
+      echo -e "  ${GREEN}✓ ${extra_file}${NC}"
     else
-      echo -e "  ${YELLOW}  ${ps1_file} — skipped (network error)${NC}"
+      echo -e "  ${YELLOW}  ${extra_file} — skipped (network error)${NC}"
     fi
   done
 

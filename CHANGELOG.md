@@ -5,6 +5,32 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.2.1] - 2026-02-17
+
+### Added
+- **`lab-traffic.tsv`** — tab-separated data file driving all traffic generation. Replaces hardcoded URL lists, GenAI provider assignments, GenAI prompts, and security test assignments previously embedded as heredocs in `proxmox-lab.sh`. Four row types: `url`, `genai_provider`, `genai_prompt`, `security_test`. All row types support an `enabled` column (`yes`/`no`) for per-row toggle control without deleting entries. URL values stored without `https://` prefix; generator accepts both forms.
+- **`_ensure_lab_traffic_tsv()`** — auto-fetches `lab-traffic.tsv` from GitHub on entry to `cmd_install_traffic` if the file is not found alongside `proxmox-lab.sh`. Mirrors the `_ensure_win_scripts()` pattern.
+- **`_load_tsv()`** — TSV parser populating bash associative arrays (`_TSV_URLS`, `_TSV_PROVIDERS`, `_TSV_PROMPTS`, `_TSV_TESTS`) from `lab-traffic.tsv`. Skips comments, blank lines, and `enabled=no` rows.
+- **`_install_profile()` rewritten** — dynamic profile script generation from TSV data, replacing all static heredocs. Server profiles emit per-domain SDK/tool User-Agents via the built-in `_server_ua()` mapping. User profiles pick from a persona-appropriate UA pool at script start and use it consistently throughout the session. Profiles with TSV provider entries (devops, developer, sales, executive) include a GenAI block with embedded `GENAI_PROVIDERS` and `GENAI_PROMPTS` arrays; a random provider/prompt pair is selected at runtime and submitted via `genai_web_prompt()`.
+- **`_server_ua(domain)`** — built-in domain-to-User-Agent mapping for server profile URL generation (fileserver, webapp, email, monitoring, devops, database). Evaluated at generation time on the Proxmox host, not at container runtime.
+- **`_is_user_profile()`**, **`_profile_ua_pool()`** — helpers for the profile script generator to select the correct script structure and persona-appropriate UA pool.
+- **Rewritten `genai.sh`** — `genai_api_call()` / `genai_random_prompt()` replaced by `genai_web_prompt(provider, prompt)`, targeting web app endpoints for three providers: ChatGPT (`chatgpt.com/backend-api/f/conversation`), Perplexity (`perplexity.ai/rest/sse/perplexity_ask`), Mistral Chat (`chat.mistral.ai/api/trpc/message.newChat?batch=1`). ZIA captures the outbound prompt body before any auth rejection arrives. `genai_browse()` platform list updated: removed Claude (no free tier), HuggingFace (requires login), Gemini (session-bound tokens, opaque to ZIA prompt capture); added Mistral Chat.
+- **Role-based GenAI providers and prompts in TSV**: devops + developer → ChatGPT + Mistral; sales + executive → ChatGPT + Perplexity. Six role-appropriate prompts per profile, selected randomly at container runtime.
+- **Profile viewer and security test toggle** (`_tsv_viewer()`, `_tsv_toggle_test()`) — accessible from the "Proceed with installation?" prompt during `install-traffic`. Displays each profile's URLs, GenAI providers, prompts, and security test on/off state. Security tests can be toggled in-script, writing back to the TSV and reloading data immediately. Designed for pre-deploy security posture review.
+- **`cmd_update`** downloads `lab-traffic.tsv` alongside `proxmox-lab.sh` and the PowerShell scripts.
+- **`LAB_TRAFFIC_TSV`** added to `save_config()` and `~/.proxmox-lab.conf`.
+
+### Changed
+- `_default_security_tests_for_profile()` now reads from TSV `_TSV_TESTS` data when loaded; falls back to hardcoded defaults if TSV is unavailable (e.g. first run before auto-fetch).
+- `genai_browse()` platform list updated (see Added above).
+- `cmd_update` supporting-file loop now covers three files: `win-traffic.ps1`, `setup-scheduled-tasks.ps1`, `lab-traffic.tsv`.
+
+### Fixed
+- `cmd_install_traffic_gen`: container enumeration now filters to `lab-managed`-tagged containers only. Previously showed and operated on all running containers cluster-wide, including unrelated production containers. Uses the same `_CT_TAGS` check applied by `cmd_show_status` and `cmd_system_cleanup`.
+- `cmd_install_traffic_gen`: added a styled tip above the "Proceed?" prompt explaining that `v` opens the profile viewer and security test toggle and that changes write back to `lab-traffic.tsv`. The option was previously a plain line that blended into the installation summary.
+
+---
+
 ## [3.1.3] - 2026-02-17
 
 ### Fixed

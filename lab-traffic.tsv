@@ -1,0 +1,193 @@
+# lab-traffic.tsv — Traffic generation data for proxmox-lab
+# Tab-separated, 4 columns: type	profile	value	enabled
+#
+# Column notes:
+#   type    : url | genai_provider | genai_prompt | security_test
+#   profile : profile name (fileserver, webapp, email, monitoring, devops, database,
+#             office-worker, sales, developer, executive)
+#   value   : URL (without https://), provider name, prompt text, or test name
+#   enabled : yes | no  (optional — defaults to yes if column is absent)
+#
+# URL values: store without https:// prefix. The generator prepends https:// at
+# script-build time. If you include https:// or http:// it will be stripped first.
+#
+# security_test rows: all applicable tests for each profile are listed explicitly,
+# including disabled ones, so the full picture is visible before deployment.
+# Enable or disable tests here, or toggle them via the in-script profile viewer.
+#
+# genai_provider / genai_prompt rows only appear for profiles that generate GenAI
+# traffic (devops, developer, sales, executive).
+#
+# Blank lines and lines starting with # are ignored by the parser.
+
+# ══════════════════════════════════════════════════════════
+#  DATA CENTER PROFILES
+# ══════════════════════════════════════════════════════════
+
+# ── fileserver ────────────────────────────────────────────
+url	fileserver	onedrive.live.com	yes
+url	fileserver	dropbox.com	yes
+url	fileserver	s3.amazonaws.com	yes
+
+security_test	fileserver	dlp-network	yes
+security_test	fileserver	eicar	no
+
+# ── webapp ────────────────────────────────────────────────
+url	webapp	api.stripe.com	yes
+url	webapp	cdn.jsdelivr.net	yes
+url	webapp	cdnjs.cloudflare.com	yes
+url	webapp	ocsp.digicert.com	yes
+url	webapp	s3.amazonaws.com	yes
+
+# ── email ─────────────────────────────────────────────────
+url	email	outlook.office365.com	yes
+url	email	mail.google.com	yes
+url	email	spamhaus.org	yes
+url	email	clamav.net	yes
+
+# ── monitoring ────────────────────────────────────────────
+url	monitoring	archive.ubuntu.com	yes
+url	monitoring	security.ubuntu.com	yes
+url	monitoring	api.datadoghq.com	yes
+url	monitoring	api.newrelic.com	yes
+url	monitoring	registry.hub.docker.com	yes
+url	monitoring	api.github.com	yes
+
+# ── devops ────────────────────────────────────────────────
+url	devops	registry.npmjs.org	yes
+url	devops	pypi.org	yes
+url	devops	github.com	yes
+url	devops	api.github.com	yes
+url	devops	hub.docker.com	yes
+
+genai_provider	devops	chatgpt	yes
+genai_provider	devops	mistral	yes
+
+genai_prompt	devops	What are the key differences between blue-green and canary deployment strategies?	yes
+genai_prompt	devops	What metrics should I monitor to assess the health of a Kubernetes cluster in production?	yes
+genai_prompt	devops	Explain the concept of infrastructure as code and the main benefits of adopting it	yes
+genai_prompt	devops	How should I structure a CI/CD pipeline for a Python microservice deployed to Kubernetes?	yes
+genai_prompt	devops	What are best practices for managing secrets in a containerized application environment?	yes
+genai_prompt	devops	What are the most important considerations when setting resource limits and requests in Kubernetes?	yes
+
+security_test	devops	eicar	yes
+security_test	devops	dlp-genai-prompt	yes
+security_test	devops	dlp-genai-file	yes
+security_test	devops	dlp-genai-image	yes
+
+# ── database ──────────────────────────────────────────────
+url	database	aws.amazon.com	yes
+url	database	s3.amazonaws.com	yes
+url	database	azure.microsoft.com	yes
+
+# ══════════════════════════════════════════════════════════
+#  BRANCH PROFILES
+# ══════════════════════════════════════════════════════════
+
+# ── office-worker ─────────────────────────────────────────
+url	office-worker	outlook.office365.com	yes
+url	office-worker	teams.microsoft.com	yes
+url	office-worker	sharepoint.com	yes
+url	office-worker	docs.google.com	yes
+url	office-worker	drive.google.com	yes
+url	office-worker	salesforce.com	yes
+url	office-worker	slack.com	yes
+url	office-worker	zoom.us	yes
+url	office-worker	linkedin.com	yes
+url	office-worker	cnn.com	yes
+url	office-worker	bbc.com	yes
+url	office-worker	npr.org	yes
+url	office-worker	nytimes.com	yes
+url	office-worker	weather.com	yes
+url	office-worker	amazon.com	yes
+url	office-worker	reddit.com	yes
+url	office-worker	espn.com	yes
+url	office-worker	indeed.com	yes
+url	office-worker	bankofamerica.com	yes
+url	office-worker	chase.com	yes
+
+security_test	office-worker	policy-violation	yes
+security_test	office-worker	dlp-genai-prompt	yes
+security_test	office-worker	eicar	no
+security_test	office-worker	ueba	no
+
+# ── sales ─────────────────────────────────────────────────
+url	sales	salesforce.com	yes
+url	sales	linkedin.com	yes
+url	sales	expedia.com	yes
+url	sales	zoom.us	yes
+url	sales	hubspot.com	yes
+
+genai_provider	sales	chatgpt	yes
+genai_provider	sales	perplexity	yes
+
+genai_prompt	sales	Write a short cold outreach email introducing a cloud security platform to a CISO	yes
+genai_prompt	sales	What are the most common objections when selling SaaS to mid-market companies and how should I handle them?	yes
+genai_prompt	sales	Help me create an agenda for a 30-minute product discovery call with a new prospect	yes
+genai_prompt	sales	What are good questions to ask during a discovery call to uncover budget and decision timeline?	yes
+genai_prompt	sales	Draft a follow-up email after a product demo that ended without a clear next step	yes
+genai_prompt	sales	Summarize the key trends in enterprise cybersecurity spending this year	yes
+
+security_test	sales	policy-violation	yes
+security_test	sales	dlp-genai-prompt	yes
+security_test	sales	dlp-genai-file	yes
+security_test	sales	ueba	no
+
+# ── developer ─────────────────────────────────────────────
+url	developer	github.com	yes
+url	developer	stackoverflow.com	yes
+url	developer	registry.npmjs.org	yes
+url	developer	pypi.org	yes
+url	developer	console.aws.amazon.com	yes
+url	developer	hub.docker.com	yes
+
+genai_provider	developer	chatgpt	yes
+genai_provider	developer	mistral	yes
+
+genai_prompt	developer	What is the difference between a process and a thread in modern operating systems?	yes
+genai_prompt	developer	Explain the CAP theorem and when I should prioritize consistency over availability	yes
+genai_prompt	developer	What are best practices for structuring a REST API in a microservices architecture?	yes
+genai_prompt	developer	What are the pros and cons of using GraphQL versus REST for a new internal API?	yes
+genai_prompt	developer	What is the strangler fig pattern and when should I use it for a legacy system migration?	yes
+genai_prompt	developer	Explain how connection pooling works and why it matters for database performance	yes
+
+security_test	developer	eicar	yes
+security_test	developer	dlp-genai-prompt	yes
+security_test	developer	dlp-genai-file	yes
+security_test	developer	policy-violation	no
+
+# ── executive ─────────────────────────────────────────────
+url	executive	wsj.com	yes
+url	executive	bloomberg.com	yes
+url	executive	ft.com	yes
+url	executive	reuters.com	yes
+url	executive	cnbc.com	yes
+url	executive	businessinsider.com	yes
+url	executive	hbr.org	yes
+url	executive	economist.com	yes
+url	executive	forbes.com	yes
+url	executive	linkedin.com	yes
+url	executive	zoom.us	yes
+url	executive	teams.microsoft.com	yes
+url	executive	outlook.office365.com	yes
+url	executive	united.com	yes
+url	executive	delta.com	yes
+url	executive	marriott.com	yes
+url	executive	hilton.com	yes
+url	executive	amextravel.com	yes
+url	executive	apple.com	yes
+url	executive	salesforce.com	yes
+
+genai_provider	executive	chatgpt	yes
+genai_provider	executive	perplexity	yes
+
+genai_prompt	executive	Summarize the key strategic implications of generative AI adoption for enterprise IT organizations	yes
+genai_prompt	executive	What questions should a CEO ask their CISO during a quarterly security briefing?	yes
+genai_prompt	executive	Draft talking points for a board presentation on our digital transformation roadmap	yes
+genai_prompt	executive	What are the most important metrics for evaluating the health of a SaaS business?	yes
+genai_prompt	executive	Summarize the competitive dynamics in the cloud security market for an executive briefing	yes
+genai_prompt	executive	What should I consider when evaluating a potential strategic acquisition in the cybersecurity space?	yes
+
+security_test	executive	ueba	yes
+security_test	executive	dlp-genai-prompt	yes
+security_test	executive	dlp-genai-file	no
