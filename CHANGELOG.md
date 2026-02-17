@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.2.2] - 2026-02-17
+
+### Added
+- **`LAB_TRAFFIC_TSV_HASH`** — SHA-256 of `lab-traffic.tsv` as last downloaded, persisted in config. Used by `cmd_update` to distinguish unmodified files (safe to overwrite) from user-customized files (protected).
+- **Hash-protected TSV update in `cmd_update`** — if `lab-traffic.tsv` has been modified since last download, the upstream version is saved as `lab-traffic.tsv.new` (rpm-style `.rpmnew`) with a diff hint rather than overwriting local customizations.
+- **Config migration for v3.2.2** — seeds `LAB_TRAFFIC_TSV_HASH` from the existing `lab-traffic.tsv` on upgrade so users with stock installs don't receive a false-positive customization warning on their first update after upgrading.
+- **Hash seeding in `_ensure_lab_traffic_tsv()`** — stores `LAB_TRAFFIC_TSV_HASH` immediately after a fresh download so the baseline is established from the very first install.
+
 ## [3.2.1] - 2026-02-17
 
 ### Added

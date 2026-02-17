@@ -13,7 +13,7 @@ YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 CYAN='\033[0;36m'
 NC='\033[0m'
-VERSION="3.2.1"
+VERSION="3.2.2"
 
 CONFIG_FILE="${HOME}/.proxmox-lab.conf"
 if [ -f "$CONFIG_FILE" ]; then
@@ -103,6 +103,7 @@ WIN_TRAFFIC_PS1="${WIN_TRAFFIC_PS1:-/root/win-traffic.ps1}"
 WIN_SETUP_PS1="${WIN_SETUP_PS1:-/root/setup-scheduled-tasks.ps1}"
 CLONE_TYPE="${CLONE_TYPE:-full}"
 LAB_TRAFFIC_TSV="${LAB_TRAFFIC_TSV:-}"
+LAB_TRAFFIC_TSV_HASH="${LAB_TRAFFIC_TSV_HASH:-}"
 EOF
   echo -e "${GREEN}✓ Settings saved to ~/.proxmox-lab.conf${NC}"
 }
@@ -144,6 +145,15 @@ _migrate_config() {
   if version_gt "3.0.0" "$saved_ver"; then
     if grep -q '^WIN_VMID=' "$CONFIG_FILE" 2>/dev/null; then
       sed -i '/^WIN_VMID=/d' "$CONFIG_FILE"
+      changed=true
+    fi
+  fi
+
+  # v3.2.2: seed LAB_TRAFFIC_TSV_HASH from existing file so the first update
+  # doesn't false-positive a customization warning for unmodified installs
+  if version_gt "3.2.2" "$saved_ver"; then
+    if [ -z "${LAB_TRAFFIC_TSV_HASH:-}" ] && [ -f "${LAB_TRAFFIC_TSV:-}" ]; then
+      LAB_TRAFFIC_TSV_HASH=$(sha256sum "$LAB_TRAFFIC_TSV" | awk '{print $1}')
       changed=true
     fi
   fi
@@ -2064,6 +2074,7 @@ _ensure_lab_traffic_tsv() {
       -o "$tmp" 2>/dev/null; then
     mv "$tmp" "$default_tsv"
     LAB_TRAFFIC_TSV="$default_tsv"
+    LAB_TRAFFIC_TSV_HASH=$(sha256sum "$default_tsv" | awk '{print $1}')
     echo -e "  ${GREEN}✓ Saved to ${default_tsv}${NC}"
     return 0
   fi
@@ -3571,7 +3582,7 @@ cmd_update() {
     ps1_base="https://raw.githubusercontent.com/mpreissner/proxmox-lab-scripts/main"
   fi
   echo "  Updating supporting files..."
-  for extra_file in "win-traffic.ps1" "setup-scheduled-tasks.ps1" "lab-traffic.tsv"; do
+  for extra_file in "win-traffic.ps1" "setup-scheduled-tasks.ps1"; do
     local extra_dest="${script_dir}/${extra_file}"
     if curl -fsSL --connect-timeout 10 "${ps1_base}/${extra_file}" -o "$extra_dest" 2>/dev/null; then
       echo -e "  ${GREEN}✓ ${extra_file}${NC}"
@@ -3579,6 +3590,45 @@ cmd_update() {
       echo -e "  ${YELLOW}  ${extra_file} — skipped (network error)${NC}"
     fi
   done
+
+  # lab-traffic.tsv — hash-protected update: preserve local customizations
+  local tsv_dest="${script_dir}/lab-traffic.tsv"
+  local tsv_tmp
+  tsv_tmp=$(mktemp /tmp/proxmox-lab-tsv.XXXXXX)
+  if curl -fsSL --connect-timeout 10 "${ps1_base}/lab-traffic.tsv" -o "$tsv_tmp" 2>/dev/null; then
+    if [ ! -f "$tsv_dest" ]; then
+      # No local file — install fresh
+      mv "$tsv_tmp" "$tsv_dest"
+      LAB_TRAFFIC_TSV_HASH=$(sha256sum "$tsv_dest" | awk '{print $1}')
+      echo -e "  ${GREEN}✓ lab-traffic.tsv${NC}"
+    else
+      local remote_hash local_hash
+      remote_hash=$(sha256sum "$tsv_tmp" | awk '{print $1}')
+      local_hash=$(sha256sum "$tsv_dest" | awk '{print $1}')
+      if [ "$remote_hash" = "$local_hash" ]; then
+        # Already up to date
+        rm -f "$tsv_tmp"
+        echo -e "  ${GREEN}✓ lab-traffic.tsv (already up to date)${NC}"
+      elif [ -n "${LAB_TRAFFIC_TSV_HASH:-}" ] && [ "$local_hash" = "$LAB_TRAFFIC_TSV_HASH" ]; then
+        # File unchanged since last download — safe to overwrite
+        mv "$tsv_tmp" "$tsv_dest"
+        LAB_TRAFFIC_TSV_HASH="$remote_hash"
+        echo -e "  ${GREEN}✓ lab-traffic.tsv${NC}"
+      else
+        # Local customizations detected — save new version alongside
+        mv "$tsv_tmp" "${tsv_dest}.new"
+        echo -e "  ${YELLOW}⚠ lab-traffic.tsv has local customizations — not overwritten${NC}"
+        echo -e "    A newer version has been saved as ${CYAN}lab-traffic.tsv.new${NC}"
+        echo -e "    Review changes and merge manually before replacing your file:"
+        echo -e "    ${CYAN}diff ${tsv_dest} ${tsv_dest}.new${NC}"
+      fi
+    fi
+  else
+    rm -f "$tsv_tmp"
+    echo -e "  ${YELLOW}  lab-traffic.tsv — skipped (network error)${NC}"
+  fi
+
+  save_config
 
   if ! $skip_confirm; then
     echo ""
