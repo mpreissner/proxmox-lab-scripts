@@ -21,7 +21,8 @@ Provides a complete workflow for building a multi-container lab environment that
 
 - **Creates Alpine LXC templates** with pre-configured utilities
 - **Deploys Data Center and Branch network containers** with appropriate configurations, distributed across multiple Proxmox cluster nodes with auto-balanced or manual placement; supports linked clones (shared base disk, faster deploy) or full clones depending on storage type and topology
-- **Generates realistic traffic patterns** for different user/server profiles, including GenAI platform usage
+- **Generates realistic traffic patterns** driven by `lab-traffic.tsv` — a tab-separated data file that defines URLs, GenAI providers, prompts, and security test assignments per profile. Profile scripts are generated dynamically at install time from this file.
+- **Simulates GenAI usage** by POSTing role-appropriate prompts to real web app endpoints (ChatGPT, Perplexity, Mistral Chat) — generating prompt capture events visible in Zscaler ZIA logs
 - **Configures security tests** independently of normal traffic — DLP (network, GenAI prompt/file/image OCR), AV/malware, policy violations, UEBA anomalies
 - **Manages Windows VMs** via a dedicated submenu: bulk-tags VMs for discovery, installs TLS inspection certificates (skip-if-current), pushes and version-checks traffic scripts, and configures scheduled tasks with profile selection
 
@@ -35,12 +36,12 @@ A single interactive menu covering the full lab lifecycle.
 1. **Create Template** — create an Alpine LXC template
 2. **Deploy Containers** — clone and configure lab containers
 3. **Start Containers** — start stopped lab-managed containers
-4. **Install Traffic Generator** — push traffic profiles to containers
+4. **Install Traffic Generator** — push traffic profiles to containers; includes an in-script profile viewer and security test toggle (enter `v` at the confirmation prompt)
 5. **Full Setup Wizard** — runs steps 1 → 2 → 3 → 4 in sequence
 6. **Windows Tools** — submenu for Windows VM management (see below)
 7. **Show Status** — view all containers with running state and traffic gen status at a glance
 8. **Update Container Packages** — run `apk update && apk upgrade` on all running lab containers in parallel
-9. **Update Lab Script** — check GitHub for a newer version, show changelog, prompt to confirm, then self-patch the script in place and exit. Also downloads updated `win-traffic.ps1` and `setup-scheduled-tasks.ps1` alongside the main script. On every interactive launch, the same check runs automatically before the menu appears.
+9. **Update Lab Script** — check GitHub for a newer version, show changelog, prompt to confirm, then self-patch the script in place and exit. Also downloads updated `win-traffic.ps1`, `setup-scheduled-tasks.ps1`, and `lab-traffic.tsv` alongside the main script. On every interactive launch, the same check runs automatically before the menu appears.
 10. **Stop Containers** — stop all running lab-managed containers
 11. **Exit**
 
@@ -67,7 +68,7 @@ A single interactive menu covering the full lab lifecycle.
 
 On first run, the script prompts for all values as usual. After completing any command, it offers to save the answers to `~/.proxmox-lab.conf`. On every subsequent run those values pre-populate all prompts — press Enter to accept, or type a new value to override. The config file survives script updates. The Full Setup Wizard auto-saves once at the end without prompting at each step.
 
-Key saved values include node selection, network bridge, CT disk storage pool (`STORAGE`), image storage pool (`IMAGE_STORAGE`), VLAN IDs, CTID ranges, template ID, clone type (`CLONE_TYPE`), TLS certificate path, and cron schedules.
+Key saved values include node selection, network bridge, CT disk storage pool (`STORAGE`), image storage pool (`IMAGE_STORAGE`), VLAN IDs, CTID ranges, template ID, clone type (`CLONE_TYPE`), TLS certificate path, cron schedules, and `lab-traffic.tsv` path.
 
 ---
 
@@ -226,20 +227,38 @@ CTID ranges and VLAN IDs have no built-in defaults — they are entered at deplo
 | **webapp** | Stripe API, CDN services, OCSP | Stripe-Node, WebServer, OpenSSL, aws-cli | — |
 | **email** | Office 365, Gmail, SpamHaus, ClamAV | Exchange Server, Postfix, SpamAssassin, ClamAV | — |
 | **monitoring** | Ubuntu repos, Datadog, New Relic, Docker Hub, GitHub | Debian APT, Datadog Agent, NewRelic, Docker, GitHub Actions | — |
-| **devops** | npm, PyPI, GitHub, Docker Hub | npm, pip, git, GitHub Actions, Docker | Browse + API call |
+| **devops** | npm, PyPI, GitHub, Docker Hub | npm, pip, git, GitHub Actions, Docker | ChatGPT, Mistral |
 | **database** | AWS RDS, Azure SQL, S3 | aws-sdk-java, Boto3, azsdk-python | — |
-| **office-worker** | Salesforce, Slack, Google Docs, news | Windows/Mac browser pool (Chrome, Edge, Firefox) | — |
-| **sales** | LinkedIn, Salesforce, Zoom, travel | Mac browser pool (Safari, Chrome) | Browse + API call |
-| **developer** | GitHub, StackOverflow, npm, PyPI, AWS Console | Mac/Linux browser pool; git, npm, pip, Docker for tool calls | Browse + API call |
-| **executive** | Office 365, WSJ, Bloomberg, Zoom | Mac Safari pool | Browse + API call |
+| **office-worker** | Microsoft 365, Slack, Google Docs, news, personal sites | Windows/Mac browser pool (Chrome, Edge, Firefox) | — |
+| **sales** | LinkedIn, Salesforce, Zoom, HubSpot, Expedia | Mac browser pool (Safari, Chrome) | ChatGPT, Perplexity |
+| **developer** | GitHub, StackOverflow, npm, PyPI, AWS Console | Mac/Linux browser pool (Chrome, Firefox) | ChatGPT, Mistral |
+| **executive** | WSJ, Bloomberg, FT, Reuters, Office 365, travel, Zoom | Mac Safari/Chrome pool | ChatGPT, Perplexity |
 
-Server profiles send role-appropriate SDK and tool user agents matching the software that would realistically generate each request. User profiles pick from a persona-specific browser UA pool once per run and use it consistently throughout, so all requests within a session appear to come from the same device.
+Server profiles emit role-appropriate SDK and tool user agents matching the software that would realistically generate each request. User profiles pick from a persona-specific browser UA pool once per run and use it consistently throughout, so all requests within a session appear to come from the same device.
 
-GenAI browsing visits ChatGPT, Claude, Gemini, HuggingFace, Perplexity, and Poe. API calls submit business-context prompts to the HuggingFace anonymous inference API. Microsoft Copilot is excluded (WebSockets, incompatible with standard TLS inspection).
+### GenAI Traffic
+
+GenAI-capable profiles (devops, developer, sales, executive) generate two types of GenAI activity:
+
+**Browsing** — periodic GET requests to GenAI platform homepages (chatgpt.com, perplexity.ai, chat.mistral.ai, poe.com), simulating a user navigating to an AI tool.
+
+**Prompt submission** — POST requests to real web app endpoints with role-appropriate business prompts embedded in the request body:
+
+| Provider | Endpoint | Profiles |
+|----------|----------|---------|
+| ChatGPT | `chatgpt.com/backend-api/f/conversation` | devops, developer, sales, executive |
+| Perplexity | `perplexity.ai/rest/sse/perplexity_ask` | sales, executive |
+| Mistral Chat | `chat.mistral.ai/api/trpc/message.newChat` | devops, developer |
+
+The server returns 401/403 (no valid session token). Zscaler inspects the outbound request body before the response arrives, so **prompt capture events fire in ZIA logs regardless of the server response**. The traffic appears as a real user interacting with a GenAI service.
+
+Microsoft Copilot is excluded — it uses WebSockets which are incompatible with standard TLS inspection. Claude and Gemini are excluded due to session-authenticated endpoints that cannot produce realistic synthetic traffic without active sessions.
 
 ### Security Tests
 
-Security tests are installed separately from normal traffic profiles and run on their own cron. Enabling or disabling a test is done during Install Traffic Generator (step 4) and takes effect immediately — no container restart needed.
+Security tests are installed separately from normal traffic profiles and run on their own cron schedule. Each test is an independent script — it is "enabled" when its script file is present on the container.
+
+The default test assignments are defined in `lab-traffic.tsv` and can be toggled per profile before deployment using the built-in profile viewer (enter `v` at the "Proceed with installation?" prompt during `install-traffic`).
 
 | Test | Category | What It Generates |
 |------|----------|-------------------|
@@ -275,6 +294,31 @@ Security tests are installed separately from normal traffic profiles and run on 
 
 ## Customization
 
+### `lab-traffic.tsv`
+
+All traffic data — URLs, GenAI providers, GenAI prompts, and security test assignments — lives in `lab-traffic.tsv` alongside `proxmox-lab.sh` on the Proxmox host. The file is auto-downloaded from GitHub on first `install-traffic` run if not present, and updated alongside the main script by `Update Lab Script` (option 9).
+
+The file is tab-separated with four columns:
+
+```
+type        profile         value                           enabled
+url         office-worker   salesforce.com                  yes
+genai_provider  devops      chatgpt                         yes
+genai_prompt    devops      What are the key differences... yes
+security_test   devops      dlp-genai-image                 no
+```
+
+To customize traffic data, edit `lab-traffic.tsv` directly on the Proxmox host and re-run `install-traffic`. Changes take effect on the next `install-traffic` run — no container restart needed. The `enabled` column on every row lets you toggle individual URLs, prompts, or security tests on or off without deleting entries.
+
+### In-Script Profile Viewer and Security Test Toggle
+
+At the "Proceed with installation?" prompt during `install-traffic`, enter `v` to open the profile viewer:
+
+- **Browse any profile** — see its URLs, GenAI providers, prompts, and security test on/off state
+- **Toggle security tests** — flip individual tests on or off; changes write back to `lab-traffic.tsv` immediately and are reflected in the upcoming install
+
+This is the recommended way to review and adjust security test posture before deploying to a new environment.
+
 ### Custom CTID Ranges
 ```bash
 ./proxmox-lab.sh deploy
@@ -294,14 +338,7 @@ Security tests are installed separately from normal traffic profiles and run on 
 # Example: 300:fileserver,301:webapp,320:developer
 ```
 
-### Custom Security Tests
-```bash
-./proxmox-lab.sh install-traffic
-# Step 4 → Custom selection
-# Choose which tests to enable per container
-```
-
-To disable a specific test on a container without reinstalling everything:
+To disable a specific security test on a container without reinstalling everything:
 ```bash
 pct exec <CTID> -- rm /opt/traffic-gen/security-tests/eicar.sh
 ```
@@ -330,8 +367,8 @@ pct exec <CTID> -- rc-status
 # Check cron schedule
 pct exec <CTID> -- crontab -l
 
-# Test profile manually
-pct exec <CTID> -- /opt/traffic-gen/traffic-gen.sh <profile>
+# Test profile manually (use bash explicitly — container default shell is ash)
+pct exec <CTID> -- bash /opt/traffic-gen/traffic-gen.sh <profile>
 ```
 
 ### Network issues
@@ -344,6 +381,14 @@ pct exec <CTID> -- ping -c 3 8.8.8.8
 pct exec <CTID> -- curl -I https://google.com
 ```
 
+### Manually testing inside a container
+
+The default shell inside Alpine containers is BusyBox `ash`. The traffic generator scripts use bash-specific syntax — always enter bash explicitly when sourcing or running scripts manually:
+
+```bash
+pct exec <CTID> -- bash
+```
+
 ---
 
 ## Safety Notes
@@ -353,6 +398,7 @@ pct exec <CTID> -- curl -I https://google.com
 - Will NOT trigger rate limits or blocklists on normal traffic
 - Safe for production internet connections
 - EICAR test file is industry-standard, non-malicious test payload
+- GenAI prompt submission uses real web app endpoints with no valid session token — server returns 401/403, but the outbound request body is inspected by Zscaler as intended
 - GenAI DLP tests POST to real AI APIs with no valid key — server returns 401, but the outbound request is inspected by Zscaler as intended
 - `dlp-genai-image` installs ImageMagick (~10 MB) on the container when enabled
 
