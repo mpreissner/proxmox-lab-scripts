@@ -13,7 +13,7 @@ YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 CYAN='\033[0;36m'
 NC='\033[0m'
-VERSION="3.1.2"
+VERSION="3.1.3"
 
 CONFIG_FILE="${HOME}/.proxmox-lab.conf"
 if [ -f "$CONFIG_FILE" ]; then
@@ -3391,7 +3391,7 @@ _startup_version_check() {
 
   remote_version=$(curl -fsSL --connect-timeout 5 --max-time 5 \
     "https://api.github.com/repos/mpreissner/proxmox-lab-scripts/releases/latest" \
-    2>/dev/null | grep '"tag_name"' | head -1 | cut -d'"' -f4 | sed 's/^v//')
+    2>/dev/null | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('tag_name','').lstrip('v'))" 2>/dev/null)
   [ -z "$remote_version" ] && return 0
   version_gt "$remote_version" "$VERSION" || return 0
 
@@ -3494,9 +3494,9 @@ cmd_update() {
   fi
 
   SCRIPT_PATH="$(realpath "$0")"
-  TEMP=$(mktemp /tmp/proxmox-lab-update.XXXXXX)
+  TEMP=$(mktemp "${SCRIPT_PATH}.XXXXXX")
 
-  echo "$remote_script" > "$TEMP"
+  printf '%s\n' "$remote_script" > "$TEMP"
 
   bash -n "$TEMP" || {
     echo -e "${RED}Downloaded script failed syntax check. Aborting.${NC}"
@@ -3504,9 +3504,8 @@ cmd_update() {
     return 1
   }
 
-  cp "$TEMP" "$SCRIPT_PATH"
-  chmod +x "$SCRIPT_PATH"
-  rm -f "$TEMP"
+  chmod +x "$TEMP"
+  mv "$TEMP" "$SCRIPT_PATH"
 
   echo -e "${GREEN}✓ Updated to v${REMOTE_VERSION}${NC}"
 
