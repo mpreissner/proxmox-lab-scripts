@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.1.3] - 2026-02-17
+
+### Fixed
+- `cmd_update`: replaced non-atomic `cp`+`rm` replacement pattern (temp file in `/tmp`, then `cp` to script path) with a truly atomic `chmod`+`mv` pattern — temp file is created in the same directory as the script, ensuring same-filesystem rename. Eliminates the window where a crash mid-copy could leave the script partially written.
+- `_startup_version_check`: replaced fragile grep-based GitHub releases API JSON parsing (`grep '"tag_name"' | cut | sed`) with `python3 -c "import sys,json; ..."`, consistent with all other JSON parsing in the script.
+
 ## [3.1.2] - 2026-02-17
 
 ### Added
