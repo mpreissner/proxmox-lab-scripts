@@ -20,7 +20,7 @@ Provides a complete workflow for building a multi-container lab environment that
 ### What It Does
 
 - **Creates Alpine LXC templates** with pre-configured utilities
-- **Deploys Data Center and Branch network containers** with appropriate configurations, distributed across multiple Proxmox cluster nodes with auto-balanced or manual placement
+- **Deploys Data Center and Branch network containers** with appropriate configurations, distributed across multiple Proxmox cluster nodes with auto-balanced or manual placement; supports linked clones (shared base disk, faster deploy) or full clones depending on storage type and topology
 - **Generates realistic traffic patterns** for different user/server profiles, including GenAI platform usage
 - **Configures security tests** independently of normal traffic — DLP (network, GenAI prompt/file/image OCR), AV/malware, policy violations, UEBA anomalies
 - **Manages Windows VMs** via a dedicated submenu: bulk-tags VMs for discovery, installs TLS inspection certificates (skip-if-current), pushes and version-checks traffic scripts, and configures scheduled tasks with profile selection
@@ -67,7 +67,7 @@ A single interactive menu covering the full lab lifecycle.
 
 On first run, the script prompts for all values as usual. After completing any command, it offers to save the answers to `~/.proxmox-lab.conf`. On every subsequent run those values pre-populate all prompts — press Enter to accept, or type a new value to override. The config file survives script updates. The Full Setup Wizard auto-saves once at the end without prompting at each step.
 
-Key saved values include node selection, network bridge, CT disk storage pool (`STORAGE`), image storage pool (`IMAGE_STORAGE`), VLAN IDs, CTID ranges, template ID, TLS certificate path, and cron schedules.
+Key saved values include node selection, network bridge, CT disk storage pool (`STORAGE`), image storage pool (`IMAGE_STORAGE`), VLAN IDs, CTID ranges, template ID, clone type (`CLONE_TYPE`), TLS certificate path, and cron schedules.
 
 ---
 
@@ -357,9 +357,11 @@ pct exec <CTID> -- curl -I https://google.com
 - `dlp-genai-image` installs ImageMagick (~10 MB) on the container when enabled
 
 ### Storage Requirements
-- Each container: ~100-200 MB
-- Template: ~50 MB
-- Total for 11 containers + template: ~2-3 GB
+- Template: ~50-100 MB
+- Full clone per container: ~200-300 MB (independent copy of template disk)
+- Linked clone per container: ~100 MB delta (base disk shared with template)
+- Total for 11 containers + template — full clones: ~2.5-3.5 GB; linked clones: ~1.2-1.5 GB
+- Storage pool must support `rootdir` content type; must be snapshot-capable (`lvmthin`, `zfspool`, Ceph RBD) to use linked clones
 
 ### Network Impact
 - Minimal bandwidth usage (<1 Mbps aggregate)

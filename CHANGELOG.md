@@ -5,6 +5,24 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.1.2] - 2026-02-17
+
+### Added
+- **Linked clone support** in `cmd_deploy_containers`: `CLONE_TYPE` config variable (`linked`|`full`, default `full`); prompted at deploy time after node and storage decisions are final. Linked clones share the template's base disk — faster deployment and smaller disk footprint. Eligibility is validated at runtime: (1) single-node deployment on snapshot-capable storage (`lvmthin`, `zfspool`, `rbd`, `btrfs`) where the target node matches the template node; (2) multi-node deployment on shared snapshot-capable storage (Ceph RBD). Multi-node deployments with local storage fall back to full clones with an explanatory warning. `CLONE_TYPE` persisted to `~/.proxmox-lab.conf`.
+- `_storage_type()`: queries `pvesh get /storage/{pool}` and returns the storage type string (`lvmthin`, `zfspool`, `nfs`, `dir`, etc.).
+- `_storage_supports_linked_clone()`: returns true if the pool type is snapshot-capable (`lvmthin`, `zfspool`, `rbd`, `btrfs`).
+- `_configure_clone_type()`: full decision tree for clone type — validates storage capability, checks deployment topology, and optionally migrates the template disk from a non-snapshot-capable pool (e.g. NFS) to a snapshot-capable local pool via `pct move-volume` before proceeding. Updates `STORAGE`, `TMPL_POOL`, `TMPL_TYPE`, and `TMPL_SHARED` on successful move.
+- **Deployment requirements summary**: aggregate container count, total RAM, and node count shown as a header line in the Resource Feasibility Check before the per-node RAM table.
+- **Disk space check** in `cmd_deploy_containers`: queries `pvesh get /nodes/{node}/storage/{pool}/status` for available and total disk per target node after clone type is determined; estimates 300 MB/container for full clones and 100 MB/container for linked clone deltas; warns at >80% utilization after deployment, aborts if available disk is less than the estimated need. Shared storage (Ceph) is queried once from the template node; local storage is checked independently per target node.
+- **`STORAGE` vs. template pool validation**: detects and auto-corrects a mismatch between `STORAGE` in config and the template's actual storage pool (e.g. after manual config edits). Proxmox requires clones to use the same pool as their template; mismatches would otherwise cause a hard failure mid-deploy.
+
+### Fixed
+- `pick_storage()` listed all storage pools including those without the `rootdir` content type (e.g. `local`, which carries only `iso,vztmpl,backup` by default). These pools cannot hold CT or VM disk volumes. Now filters to pools with `rootdir` enabled, consistent with the `vztmpl` filter already applied by `pick_image_storage()`.
+- `pct clone` for linked clones incorrectly passed `--storage`; Proxmox rejects this flag for linked clones because the clone must reside on the same pool as the template. The flag is now omitted when `CLONE_TYPE=linked`.
+- Disk space check used `pvesh get /nodes/{node}/storage/{pool}` (returns storage config metadata) instead of `.../storage/{pool}/status` (returns live usage data including `avail` and `total`); the wrong endpoint returned no usable data, causing every node to show "could not query".
+
+---
+
 ## [3.0.5] - 2026-02-15
 
 ### Fixed
@@ -352,6 +370,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `browse_random()` invalid test operator (`-file` → `-f`) in `random-timing.sh`
 - `RUNNING_CONTAINERS` in `cmd_install_traffic_gen` now correctly filters to running containers only (`pct list` filtered by status field)
 
+[3.1.2]: https://github.com/mpreissner/proxmox-lab-scripts/compare/v3.0.5...v3.1.2
 [3.0.5]: https://github.com/mpreissner/proxmox-lab-scripts/compare/v3.0.4...v3.0.5
 [3.0.4]: https://github.com/mpreissner/proxmox-lab-scripts/compare/v3.0.3...v3.0.4
 [3.0.3]: https://github.com/mpreissner/proxmox-lab-scripts/compare/v3.0.2...v3.0.3
