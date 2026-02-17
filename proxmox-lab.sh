@@ -13,7 +13,7 @@ YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 CYAN='\033[0;36m'
 NC='\033[0m'
-VERSION="3.0.5"
+VERSION="3.1.2"
 
 CONFIG_FILE="${HOME}/.proxmox-lab.conf"
 if [ -f "$CONFIG_FILE" ]; then
@@ -95,6 +95,7 @@ CRON_SECURITY="${CRON_SECURITY:-*/30 * * * *}"
 CERT_PATH="${CERT_PATH:-}"
 WIN_TRAFFIC_PS1="${WIN_TRAFFIC_PS1:-/root/win-traffic.ps1}"
 WIN_SETUP_PS1="${WIN_SETUP_PS1:-/root/setup-scheduled-tasks.ps1}"
+CLONE_TYPE="${CLONE_TYPE:-full}"
 EOF
   echo -e "${GREEN}✓ Settings saved to ~/.proxmox-lab.conf${NC}"
 }
@@ -164,12 +165,13 @@ pick_storage() {
     [[ "$chg" =~ ^[Yy]$ ]] || return 0
   fi
 
-  echo "Available storage pools on ${target_node}:"
+  echo "Storage pools supporting CT/VM volumes (rootdir) on ${target_node}:"
   pvesh get /nodes/"$target_node"/storage --output-format json 2>/dev/null | python3 -c "
 import sys,json
 for p in json.load(sys.stdin):
-    shared = '(shared)' if p.get('shared') else '(local) '
-    print(f'  {p[\"storage\"]:20s} {p[\"type\"]:12s} {shared}')
+    if 'rootdir' in (p.get('content') or ''):
+        shared = '(shared)' if p.get('shared') else '(local) '
+        print(f'  {p[\"storage\"]:20s} {p[\"type\"]:12s} {shared}')
 " 2>/dev/null || echo "  (unable to list storage)"
 
   read -p "Storage pool name [${STORAGE:-local-zfs}]: " input
@@ -204,6 +206,130 @@ for p in json.load(sys.stdin):
   while [ -z "$IMAGE_STORAGE" ]; do
     read -p "Image storage pool: " IMAGE_STORAGE
   done
+}
+
+# Returns the Proxmox storage type string for a pool (e.g. lvmthin, zfspool, nfs, dir).
+_storage_type() {
+  local pool="$1"
+  pvesh get /storage/"$pool" --output-format json 2>/dev/null | python3 -c "
+import sys,json
+try: print(json.load(sys.stdin).get('type',''))
+except: print('')" 2>/dev/null || echo ""
+}
+
+# Returns 0 (true) if the storage pool supports linked clones (snapshot-capable).
+_storage_supports_linked_clone() {
+  local pool="$1"
+  case "$(_storage_type "$pool")" in
+    lvmthin|zfspool|rbd|btrfs) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+# Determines the clone type to use for this deployment and sets CLONE_TYPE.
+# Uses globals: TEMPLATE_ID, TMPL_NODE, TMPL_POOL, TMPL_TYPE, TMPL_SHARED, SELECTED_NODES.
+# May update: CLONE_TYPE, STORAGE, TMPL_POOL, TMPL_TYPE, TMPL_SHARED (on disk move).
+_configure_clone_type() {
+  echo ""
+  echo -e "${BLUE}Clone Type${NC}"
+
+  # If storage doesn't support linked clones (NFS, dir, cifs, etc.), offer to move
+  # the template disk to a snapshot-capable pool, or fall back to full clones.
+  if ! _storage_supports_linked_clone "$TMPL_POOL"; then
+    echo -e "${YELLOW}⚠  Template storage '${TMPL_POOL}' (type: ${TMPL_TYPE}) does not support linked clones.${NC}"
+    echo "   Snapshot-capable storage (local-lvm, local-zfs, Ceph RBD) is required."
+    echo ""
+    echo "   1) Full clones — continue as-is (recommended)"
+    echo "   2) Move template disk to a snapshot-capable pool, then choose clone type"
+    read -p "   Select [1-2] (default: 1): " _nfs_choice
+    if [[ "${_nfs_choice:-1}" != "2" ]]; then
+      CLONE_TYPE="full"
+      return 0
+    fi
+
+    # List snapshot-capable pools on TMPL_NODE
+    echo ""
+    echo "   Snapshot-capable storage pools on ${TMPL_NODE}:"
+    pvesh get /nodes/"$TMPL_NODE"/storage --output-format json 2>/dev/null | python3 -c "
+import sys,json
+capable = {'lvmthin','zfspool','rbd','btrfs'}
+for p in json.load(sys.stdin):
+    if p.get('type') in capable:
+        shared = '(shared)' if p.get('shared') else '(local) '
+        print(f'    {p[\"storage\"]:20s}  type: {p[\"type\"]:12s}  {shared}')
+" 2>/dev/null || echo "   (unable to list storage)"
+    echo ""
+    read -p "   Destination storage pool (blank to cancel): " _move_target
+    if [ -z "$_move_target" ]; then
+      echo "   No storage selected. Using full clones."
+      CLONE_TYPE="full"
+      return 0
+    fi
+
+    echo "   Moving template disk: ${TMPL_POOL} → ${_move_target}..."
+    if run_on_node "$TMPL_NODE" pct move-volume "$TEMPLATE_ID" rootfs "$_move_target" --delete 1; then
+      echo -e "   ${GREEN}✓ Template disk moved to '${_move_target}'${NC}"
+      TMPL_POOL="$_move_target"
+      TMPL_TYPE=$(_storage_type "$TMPL_POOL")
+      TMPL_SHARED=$(pvesh get /storage/"$TMPL_POOL" --output-format json 2>/dev/null | python3 -c "
+import sys,json
+try: print('1' if json.load(sys.stdin).get('shared') else '0')
+except: print('0')
+" 2>/dev/null || echo "0")
+      STORAGE="$TMPL_POOL"
+      echo ""
+      # Fall through to linked clone eligibility check below
+    else
+      echo -e "   ${RED}✗ Disk move failed. Falling back to full clones.${NC}"
+      CLONE_TYPE="full"
+      return 0
+    fi
+  fi
+
+  # Storage is snapshot-capable. Now check topology.
+  # Linked clones require all containers to land on the same node as the template
+  # (for local storage), or shared snapshot-capable storage (Ceph RBD) for multi-node.
+  local _multi_node=false
+  [ "${#SELECTED_NODES[@]}" -gt 1 ] && _multi_node=true
+
+  if $_multi_node && [ "$TMPL_SHARED" != "1" ]; then
+    # Multi-node deployment with local storage — linked clones can't span nodes.
+    echo -e "${YELLOW}⚠  Linked clones are not supported for multi-node deployments with local storage.${NC}"
+    echo "   (The template on '${TMPL_POOL}' is local to ${TMPL_NODE}; containers on other"
+    echo "   nodes cannot share its base disk. To use linked clones, deploy to a single"
+    echo "   node or switch to Ceph RBD storage.)"
+    echo "   Using full clones."
+    CLONE_TYPE="full"
+    return 0
+  fi
+
+  if ! $_multi_node && [ "${SELECTED_NODES[0]}" != "$TMPL_NODE" ]; then
+    # Single target node that differs from the template node — deploy would clone on
+    # TMPL_NODE then migrate. Linked clones with local storage cannot be migrated.
+    echo -e "${YELLOW}⚠  Linked clones require the target node to match the template node.${NC}"
+    echo "   Template is on '${TMPL_NODE}', but deploying to '${SELECTED_NODES[0]}'."
+    echo "   (Proxmox cannot migrate a linked clone off local storage.)"
+    echo "   Using full clones."
+    CLONE_TYPE="full"
+    return 0
+  fi
+
+  # Eligible. Prompt — default to linked since the user's topology supports it.
+  echo "   Linked clones share the template's base disk (faster deploy, smaller footprint)."
+  echo "   Full clones are fully independent (larger, no dependency on the template)."
+  echo -e "   ${YELLOW}Note: with linked clones, the cleanup command must destroy all lab containers${NC}"
+  echo -e "   ${YELLOW}before the template — which it already does automatically.${NC}"
+  echo ""
+  local _default_clone="${CLONE_TYPE:-linked}"
+  # If user previously saved 'full', respect it as the default here.
+  [[ "$_default_clone" != "linked" ]] && _default_clone="full"
+  if [[ "$_default_clone" == "linked" ]]; then
+    read -p "   Use linked clones? [Y/n]: " _clone_choice
+    [[ "${_clone_choice:-Y}" =~ ^[Nn]$ ]] && CLONE_TYPE="full" || CLONE_TYPE="linked"
+  else
+    read -p "   Use linked clones? [y/N]: " _clone_choice
+    [[ "${_clone_choice:-N}" =~ ^[Yy]$ ]] && CLONE_TYPE="linked" || CLONE_TYPE="full"
+  fi
 }
 
 version_gt() {
@@ -802,6 +928,31 @@ cmd_deploy_containers() {
   echo -e "${BLUE}3. Storage Configuration${NC}"
   pick_storage "${SELECTED_NODES[0]:-$(get_local_node)}"
 
+  # Detect template's storage pool and type early so we can validate STORAGE
+  # and inform the clone type decision before the user reaches the summary.
+  LOCAL_NODE=$(get_local_node)
+  TMPL_NODE=$(_find_template_node "$TEMPLATE_ID")
+  [ -z "$TMPL_NODE" ] && TMPL_NODE="$LOCAL_NODE"
+  TMPL_POOL=$(run_on_node "$TMPL_NODE" pct config "$TEMPLATE_ID" 2>/dev/null | \
+    grep '^rootfs:' | sed 's/rootfs: *//' | cut -d: -f1)
+  TMPL_TYPE=$(_storage_type "$TMPL_POOL")
+  TMPL_SHARED=$(pvesh get /storage/"$TMPL_POOL" --output-format json 2>/dev/null | python3 -c "
+import sys,json
+try: print('1' if json.load(sys.stdin).get('shared') else '0')
+except: print('0')
+" 2>/dev/null || echo "0")
+
+  # Proxmox requires clones to use the same storage pool as the template.
+  # If STORAGE drifted (e.g. user edited conf manually), auto-correct it now
+  # so the rest of the flow uses the right pool.
+  if [ -n "$TMPL_POOL" ] && [ "$STORAGE" != "$TMPL_POOL" ]; then
+    echo ""
+    echo -e "${YELLOW}⚠  Storage mismatch: template is on '${TMPL_POOL}' but STORAGE is '${STORAGE}'.${NC}"
+    echo "   Proxmox requires clones to use the same pool as the template."
+    echo "   Updating STORAGE → ${TMPL_POOL}"
+    STORAGE="$TMPL_POOL"
+  fi
+
   # 4. Network
   echo ""
   echo -e "${BLUE}4. Network Configuration${NC}"
@@ -1002,9 +1153,18 @@ cmd_deploy_containers() {
   fi
 
   # Resource Feasibility Check
+  _total_containers="${#DEPLOY_LIST[@]}"
+  _total_ram_mb=0
+  for entry in "${DEPLOY_LIST[@]}"; do
+    read -r _ _ _ mem _ _ <<< "$entry"
+    _total_ram_mb=$(( _total_ram_mb + mem ))
+  done
+
   echo ""
   echo -e "${BLUE}Resource Feasibility Check:${NC}"
-  printf "  %-10s %-12s %-14s %-12s %-10s\n" "Node" "Assigned" "After Use" "Headroom" "Status"
+  echo "  Deploying ${_total_containers} container(s) across ${#SELECTED_NODES[@]} node(s) — ${_total_ram_mb} MB RAM total."
+  echo ""
+  printf "  %-10s %-12s %-14s %-12s %-10s\n" "Node" "RAM Alloc" "RAM After" "Headroom" "Status"
   echo "  ---------------------------------------------------------------"
 
   ABORT_DEPLOY=false
@@ -1049,6 +1209,89 @@ cmd_deploy_containers() {
     return 1
   fi
 
+  # Clone type must be decided before the disk check so the estimate is correct.
+  _configure_clone_type
+
+  # Disk Space Check
+  # Estimates: full clone ~300 MB/container; linked clone ~100 MB/container (delta only).
+  # These are conservative upper bounds — Alpine containers are small but this gives headroom.
+  echo ""
+  echo -e "${BLUE}Disk Space Check (${STORAGE}):${NC}"
+  if [ "${CLONE_TYPE:-full}" = "linked" ]; then
+    _per_ct_disk_mb=100
+    _disk_note="linked, delta est."
+  else
+    _per_ct_disk_mb=300
+    _disk_note="full clone est."
+  fi
+  echo "  Est. ${_per_ct_disk_mb} MB/container (${_disk_note})"
+  echo ""
+
+  # Tally containers per target node
+  declare -A _node_ct_counts=()
+  for entry in "${DEPLOY_LIST[@]}"; do
+    read -r ctid _ _ _ _ _ <<< "$entry"
+    _tnode="${CTID_NODES[$ctid]}"
+    _node_ct_counts[$_tnode]=$(( ${_node_ct_counts[$_tnode]:-0} + 1 ))
+  done
+
+  # Shared storage: one pool serves all nodes — query once from TMPL_NODE
+  if [ "$TMPL_SHARED" = "1" ]; then
+    _disk_check_nodes=("$TMPL_NODE")
+    _node_ct_counts["$TMPL_NODE"]="${#DEPLOY_LIST[@]}"
+  else
+    _disk_check_nodes=($(printf '%s\n' "${!_node_ct_counts[@]}" | sort))
+  fi
+
+  printf "  %-10s %-14s %-14s %-14s %-10s\n" "Node" "Est. Needed" "Available" "After" "Status"
+  echo "  ---------------------------------------------------------------"
+
+  _DISK_ABORT=false
+  for _dnode in "${_disk_check_nodes[@]}"; do
+    _ct_count="${_node_ct_counts[$_dnode]:-0}"
+    _needed_mb=$(( _ct_count * _per_ct_disk_mb ))
+
+    read -r _avail_mb _total_disk_mb <<< "$(pvesh get /nodes/"$_dnode"/storage/"$STORAGE"/status \
+      --output-format json 2>/dev/null | python3 -c "
+import sys,json
+try:
+    d=json.load(sys.stdin)
+    print(d.get('avail',0)//(1024*1024), d.get('total',0)//(1024*1024))
+except: print('0 0')" 2>/dev/null || echo "0 0")"
+
+    if [ "${_avail_mb:-0}" -eq 0 ] && [ "${_total_disk_mb:-0}" -eq 0 ]; then
+      printf "  %-10s %-14s %-14s %-14s " "$_dnode" "~${_needed_mb} MB" "unknown" "unknown"
+      echo -e "${YELLOW}⚠ could not query${NC}"
+      continue
+    fi
+
+    _after_disk_mb=$(( _avail_mb - _needed_mb ))
+    if [ "${_total_disk_mb:-0}" -gt 0 ]; then
+      _after_disk_pct=$(( (_total_disk_mb - _after_disk_mb) * 100 / _total_disk_mb ))
+    else
+      _after_disk_pct=0
+    fi
+
+    if [ "$_avail_mb" -lt "$_needed_mb" ]; then
+      _disk_status="${RED}✗ INSUFFICIENT${NC}"
+      _DISK_ABORT=true
+    elif [ "$_after_disk_pct" -ge 80 ]; then
+      _disk_status="${YELLOW}⚠ WARN (${_after_disk_pct}% full after)${NC}"
+    else
+      _disk_status="${GREEN}✓ OK${NC}"
+    fi
+    printf "  %-10s %-14s %-14s %-14s " \
+      "$_dnode" "~${_needed_mb} MB" "${_avail_mb} MB" "${_after_disk_mb} MB"
+    echo -e "$_disk_status"
+  done
+
+  if $_DISK_ABORT; then
+    echo ""
+    echo -e "${RED}Error: Insufficient disk space on one or more nodes.${NC}"
+    echo "Free up space on '${STORAGE}' or reduce the deployment scope."
+    return 1
+  fi
+
   # Assignment Preview
   echo ""
   echo -e "${BLUE}Container Assignment:${NC}"
@@ -1072,6 +1315,7 @@ cmd_deploy_containers() {
   section_header "Deployment Summary"
   echo "Source Template: CT ${TEMPLATE_ID}"
   echo "Storage:         ${STORAGE}"
+  echo "Clone Type:      ${CLONE_TYPE:-full}"
   echo "Bridge:          ${BRIDGE}"
   echo "Nodes:           ${SELECTED_NODES[*]}"
 
@@ -1111,18 +1355,7 @@ cmd_deploy_containers() {
     return 0
   fi
 
-  # Locate the template in the cluster and determine the clone strategy.
-  LOCAL_NODE=$(get_local_node)
-  TMPL_NODE=$(_find_template_node "$TEMPLATE_ID")
-  [ -z "$TMPL_NODE" ] && TMPL_NODE="$LOCAL_NODE"
-  TMPL_POOL=$(run_on_node "$TMPL_NODE" pct config "$TEMPLATE_ID" 2>/dev/null | \
-    grep '^rootfs:' | sed 's/rootfs: *//' | cut -d: -f1)
-  TMPL_SHARED=$(pvesh get /storage/"$TMPL_POOL" --output-format json 2>/dev/null | \
-    python3 -c "
-import sys,json
-try: print('1' if json.load(sys.stdin).get('shared') else '0')
-except: print('0')
-" 2>/dev/null || echo "0")
+  # TMPL_NODE, TMPL_POOL, TMPL_TYPE, TMPL_SHARED were detected after pick_storage above.
 
   # If using shared storage, verify it's accessible on all target nodes before deploying
   if [ "$TMPL_SHARED" = "1" ]; then
@@ -1161,9 +1394,9 @@ exit(0 if '${TMPL_POOL}' in pools else 1)
   echo "Deploying Containers"
   echo -e "==========================================${NC}"
   if [ "$TMPL_SHARED" = "1" ]; then
-    echo "(Template CT ${TEMPLATE_ID} on ${TMPL_NODE} — shared storage, cloning on each target node)"
+    echo "(Template CT ${TEMPLATE_ID} on ${TMPL_NODE} — shared storage, ${CLONE_TYPE:-full} clones on each target node)"
   else
-    echo "(Template CT ${TEMPLATE_ID} on ${TMPL_NODE} — local storage, will clone-and-migrate for remote targets)"
+    echo "(Template CT ${TEMPLATE_ID} on ${TMPL_NODE} — local storage, ${CLONE_TYPE:-full} clones, migrate for remote targets)"
   fi
   echo ""
 
@@ -1183,10 +1416,17 @@ exit(0 if '${TMPL_POOL}' in pools else 1)
       CLONE_NODE="$TMPL_NODE"
     fi
 
-    run_on_node "$CLONE_NODE" pct clone $TEMPLATE_ID $CTID \
-      --hostname $HOSTNAME \
-      --full 1 \
-      --storage $STORAGE
+    if [ "${CLONE_TYPE:-full}" = "linked" ]; then
+      # --storage must be omitted for linked clones — Proxmox requires the clone
+      # to live on the same pool as the template and rejects the flag otherwise.
+      run_on_node "$CLONE_NODE" pct clone $TEMPLATE_ID $CTID \
+        --hostname $HOSTNAME
+    else
+      run_on_node "$CLONE_NODE" pct clone $TEMPLATE_ID $CTID \
+        --hostname $HOSTNAME \
+        --full 1 \
+        --storage $STORAGE
+    fi
     run_on_node "$CLONE_NODE" pct set $CTID \
       --net0 name=eth0,bridge=${BRIDGE},tag=${VLAN},firewall=1,ip=dhcp
     run_on_node "$CLONE_NODE" pct set $CTID --memory $MEM --onboot 1 --tags lab-managed
@@ -3368,6 +3608,10 @@ cmd_system_cleanup() {
 
   echo ""
   echo -e "${RED}WARNING: This cannot be undone.${NC}"
+  if [ "${CLONE_TYPE:-full}" = "linked" ]; then
+    echo -e "${YELLOW}Note: linked clones are in use — all lab containers will be destroyed${NC}"
+    echo -e "${YELLOW}      before the template to release the shared base disk.${NC}"
+  fi
   echo ""
   read -p "Type CONFIRM to proceed: " confirm_text
 
