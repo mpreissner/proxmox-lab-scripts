@@ -13,7 +13,7 @@ YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 CYAN='\033[0;36m'
 NC='\033[0m'
-VERSION="3.2.4"
+VERSION="3.2.5"
 
 CONFIG_FILE="${HOME}/.proxmox-lab.conf"
 if [ -f "$CONFIG_FILE" ]; then
@@ -666,8 +666,9 @@ print(' '.join(pools))
     if [ "$_cluster_size" -gt 1 ] && [ -n "$_shared_pools" ]; then
       echo ""
       echo -e "${YELLOW}  Tip: You selected local storage in a multi-node cluster.${NC}"
-      echo -e "${YELLOW}  Placing the template on shared storage enables linked clones${NC}"
-      echo -e "${YELLOW}  across all nodes for faster deployment.${NC}"
+      echo -e "${YELLOW}  Shared storage lets all nodes access the template directly:${NC}"
+      echo -e "${YELLOW}    • Ceph RBD — enables linked clones across all nodes (fastest deploy)${NC}"
+      echo -e "${YELLOW}    • NFS / CIFS — enables full clones from any node without cross-node migration${NC}"
       echo "  Available shared pools: ${_shared_pools}"
       echo ""
       read -p "  Switch to shared storage? [y/N]: " _switch
@@ -3732,7 +3733,25 @@ cmd_system_cleanup() {
   local _nodes _node
   _nodes=$(get_cluster_nodes 2>/dev/null)
   [ -z "$_nodes" ] && _nodes=$(get_local_node)
-  for _node in $_nodes; do
+
+  # For shared storage (NFS, Ceph) the same image is visible from every node —
+  # query and act on only the first node to avoid duplicate listings and
+  # failure messages from trying to remove an already-gone file.
+  local _img_is_shared
+  _img_is_shared=$(pvesh get /storage/"${_img_store}" --output-format json 2>/dev/null | python3 -c "
+import sys, json
+try: print('1' if json.load(sys.stdin).get('shared') else '0')
+except: print('0')
+" 2>/dev/null)
+
+  local _img_nodes
+  if [ "${_img_is_shared}" = "1" ]; then
+    _img_nodes=$(echo "$_nodes" | awk '{print $1}')
+  else
+    _img_nodes="$_nodes"
+  fi
+
+  for _node in $_img_nodes; do
     while IFS= read -r _tmpl; do
       [ -n "$_tmpl" ] && { ALPINE_IMAGE_NODES+=("$_node"); ALPINE_IMAGE_PATHS+=("$_tmpl"); }
     done < <(run_on_node "$_node" pveam list "${_img_store}" 2>/dev/null | \
