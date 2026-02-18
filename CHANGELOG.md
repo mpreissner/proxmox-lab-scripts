@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [3.2.3] - 2026-02-18
 
 ### Fixed
 - `create-template`: containers were deployed with no timezone set, defaulting to UTC. Added step 7 (Timezone) to the template creation flow — prompts for a timezone string (e.g. `America/New_York`), defaulting to the Proxmox host's current timezone detected via `timedatectl`. `tzdata` is now included in the `apk add` package list; the chosen timezone is applied to the template via `/etc/localtime` and `/etc/timezone` so all clones inherit it automatically. `TIMEZONE` persisted to `~/.proxmox-lab.conf`. TLS certificate prompt renumbered to step 8.
