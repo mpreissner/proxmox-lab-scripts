@@ -5,6 +5,11 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.2.5] - 2026-02-18
+
+### Fixed
+- `cmd_create_template`: shared-storage tip shown when local storage is selected in a multi-node cluster incorrectly implied that any shared storage enables linked clones. Reworded to distinguish Ceph RBD (snapshot-capable — enables linked clones across all nodes) from NFS/CIFS (not snapshot-capable — enables full clones from any node without cross-node migration).
+
 ## [3.2.4] - 2026-02-18
 
 ### Fixed
@@ -422,6 +427,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `browse_random()` invalid test operator (`-file` → `-f`) in `random-timing.sh`
 - `RUNNING_CONTAINERS` in `cmd_install_traffic_gen` now correctly filters to running containers only (`pct list` filtered by status field)
 
+[3.2.5]: https://github.com/mpreissner/proxmox-lab-scripts/compare/v3.2.4...v3.2.5
 [3.2.4]: https://github.com/mpreissner/proxmox-lab-scripts/compare/v3.2.3...v3.2.4
 [3.2.3]: https://github.com/mpreissner/proxmox-lab-scripts/compare/v3.2.2...v3.2.3
 [3.2.2]: https://github.com/mpreissner/proxmox-lab-scripts/compare/v3.2.1...v3.2.2
