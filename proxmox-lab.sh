@@ -3732,7 +3732,7 @@ cmd_system_cleanup() {
     while IFS= read -r _tmpl; do
       [ -n "$_tmpl" ] && { ALPINE_IMAGE_NODES+=("$_node"); ALPINE_IMAGE_PATHS+=("$_tmpl"); }
     done < <(run_on_node "$_node" pveam list "${_img_store}" 2>/dev/null | \
-      awk '/^alpine-.*\.tar\.xz/{print $1}' 2>/dev/null)
+      awk '/alpine-.*\.tar\.xz/{print $1}' 2>/dev/null)
   done
 
   if [ ${#LAB_CTIDS[@]} -eq 0 ] && [ -z "$TEMPLATE_CTID" ] && [ ${#ALPINE_IMAGE_PATHS[@]} -eq 0 ]; then
@@ -3838,7 +3838,7 @@ cmd_system_cleanup() {
     for i in "${!ALPINE_IMAGE_PATHS[@]}"; do
       _node="${ALPINE_IMAGE_NODES[$i]}"
       _tmpl="${ALPINE_IMAGE_PATHS[$i]}"
-      if run_on_node "$_node" pveam remove "${_img_store}" "${_tmpl}" 2>/dev/null; then
+      if run_on_node "$_node" pveam remove "${_tmpl}" 2>/dev/null; then
         echo -e "${GREEN}✓ Removed ${_tmpl} from ${_node}${NC}"
       else
         echo -e "${RED}✗ Failed to remove ${_tmpl} from ${_node}${NC}"
