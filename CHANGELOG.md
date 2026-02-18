@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.3.0] - 2026-02-18
+
+### Added
+- **TSV-driven Windows traffic generator** — `cmd_windows_install_traffic` now generates `win-traffic.ps1` dynamically from `lab-traffic.tsv` rather than pushing a static file. URL lists, GenAI providers, and GenAI prompts for the `office-worker`, `sales`, `developer`, and `executive` profiles are sourced from the TSV at push time, so a TSV update is automatically reflected the next time the script is pushed to VMs. The `$SCRIPT_VERSION` field in the generated file encodes both the script version and a short TSV hash, so a TSV-only change (without a version bump) still triggers a re-push.
+- **`_generate_win_traffic_ps1()`** — generates a complete `win-traffic.ps1` to a local temp file from loaded TSV data. Static scaffolding (UA pools, GenAI helpers, threat session, main dispatch loop) is emitted via heredocs; per-profile session functions are assembled dynamically per profile from TSV arrays.
+- **`_generate_win_ps1_profile()`** — outputs the PowerShell session function for a single user profile. Builds URL arrays, UA pools, GenAI provider/prompt arrays, and developer tool-UA routing from TSV data. Developer profile routes tool-domain requests through a tool User-Agent; all other profiles use a persona-appropriate browser UA pool.
+- **Updated GenAI endpoints** — generated PS1 uses correct web app endpoints: ChatGPT (`chatgpt.com/backend-api/f/conversation`), Perplexity (`perplexity.ai/rest/sse/perplexity_ask`), Mistral (`chat.mistral.ai/api/trpc/message.newChat?batch=1`). Replaces previous HuggingFace endpoints that required authentication.
+
+### Changed
+- `_ensure_win_scripts()` simplified — now manages only `setup-scheduled-tasks.ps1`; `win-traffic.ps1` is generated locally and is no longer downloaded from GitHub.
+- `cmd_update` supporting-file loop updated — `win-traffic.ps1` removed from the download list; only `setup-scheduled-tasks.ps1` is fetched on update.
+- `WIN_TRAFFIC_PS1` config key removed from `save_config()` — no longer needed since the script is generated at push time, not stored on disk. `_migrate_config()` strips it from existing `~/.proxmox-lab.conf` on first run after upgrade.
+
 ## [3.2.6] - 2026-02-18
 
 ### Added
@@ -432,6 +445,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `browse_random()` invalid test operator (`-file` → `-f`) in `random-timing.sh`
 - `RUNNING_CONTAINERS` in `cmd_install_traffic_gen` now correctly filters to running containers only (`pct list` filtered by status field)
 
+[3.3.0]: https://github.com/mpreissner/proxmox-lab-scripts/compare/v3.2.6...v3.3.0
 [3.2.6]: https://github.com/mpreissner/proxmox-lab-scripts/compare/v3.2.5...v3.2.6
 [3.2.5]: https://github.com/mpreissner/proxmox-lab-scripts/compare/v3.2.4...v3.2.5
 [3.2.4]: https://github.com/mpreissner/proxmox-lab-scripts/compare/v3.2.3...v3.2.4

@@ -13,7 +13,7 @@ YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 CYAN='\033[0;36m'
 NC='\033[0m'
-VERSION="3.2.6"
+VERSION="3.3.0"
 
 CONFIG_FILE="${HOME}/.proxmox-lab.conf"
 if [ -f "$CONFIG_FILE" ]; then
@@ -99,7 +99,6 @@ CRON_SERVER="${CRON_SERVER:-*/15 * * * *}"
 CRON_OFFICE="${CRON_OFFICE:-*/5 8-18 * * 1-5}"
 CRON_SECURITY="${CRON_SECURITY:-*/30 * * * *}"
 CERT_PATH="${CERT_PATH:-}"
-WIN_TRAFFIC_PS1="${WIN_TRAFFIC_PS1:-/root/win-traffic.ps1}"
 WIN_SETUP_PS1="${WIN_SETUP_PS1:-/root/setup-scheduled-tasks.ps1}"
 CLONE_TYPE="${CLONE_TYPE:-full}"
 TIMEZONE="${TIMEZONE:-}"
@@ -146,6 +145,14 @@ _migrate_config() {
   if version_gt "3.0.0" "$saved_ver"; then
     if grep -q '^WIN_VMID=' "$CONFIG_FILE" 2>/dev/null; then
       sed -i '/^WIN_VMID=/d' "$CONFIG_FILE"
+      changed=true
+    fi
+  fi
+
+  # v3.3.0: WIN_TRAFFIC_PS1 removed (win-traffic.ps1 is now generated from TSV, not stored on disk)
+  if version_gt "3.3.0" "$saved_ver"; then
+    if grep -q '^WIN_TRAFFIC_PS1=' "$CONFIG_FILE" 2>/dev/null; then
+      sed -i '/^WIN_TRAFFIC_PS1=/d' "$CONFIG_FILE"
       changed=true
     fi
   fi
@@ -3653,7 +3660,7 @@ cmd_update() {
     ps1_base="https://raw.githubusercontent.com/mpreissner/proxmox-lab-scripts/main"
   fi
   echo "  Updating supporting files..."
-  for extra_file in "win-traffic.ps1" "setup-scheduled-tasks.ps1"; do
+  for extra_file in "setup-scheduled-tasks.ps1"; do
     local extra_dest="${script_dir}/${extra_file}"
     if curl -fsSL --connect-timeout 10 "${ps1_base}/${extra_file}" -o "$extra_dest" 2>/dev/null; then
       echo -e "  ${GREEN}✓ ${extra_file}${NC}"
@@ -4222,6 +4229,458 @@ cmd_windows_install_cert() {
   _maybe_save_config
 }
 
+# ============================================================
+# Windows Traffic Script Generator
+# ============================================================
+
+# Outputs the PowerShell session function for one Windows user profile to stdout.
+# Reads _TSV_URLS, _TSV_PROVIDERS, _TSV_PROMPTS (populated by _load_tsv).
+_generate_win_ps1_profile() {
+  local profile="$1"
+  local raw_urls="${_TSV_URLS[$profile]:-}"
+  local providers="${_TSV_PROVIDERS[$profile]:-}"
+  local raw_prompts="${_TSV_PROMPTS[$profile]:-}"
+
+  # PascalCase function name: office-worker -> OfficeWorker
+  local func_name
+  func_name=$(printf '%s' "$profile" | awk -F'-' '{for(i=1;i<=NF;i++) $i=toupper(substr($i,1,1)) substr($i,2); OFS=""; print}')
+
+  printf '# ---------------------------------------------------------------------------\n'
+  printf '# Profile: %s (generated from lab-traffic.tsv)\n' "$profile"
+  printf '# ---------------------------------------------------------------------------\n'
+  printf 'function Invoke-%sSession {\n' "$func_name"
+
+  case "$profile" in
+    developer)
+      printf '    $browserUa = $UA_DEV_BROWSER | Get-Random\n'
+      printf '    $toolUa    = $UA_DEV_TOOL    | Get-Random\n'
+      printf '    Write-TrafficLog "--- session start (browser: $($browserUa.Split('"'"'/'"'"')[0]), tool: $($toolUa.Split('"'"'/'"'"')[0]))"\n'
+      ;;
+    sales|executive)
+      printf '    $ua = $UA_MAC | Get-Random\n'
+      printf '    Write-TrafficLog "--- session start (ua: $($ua.Split('"'"'/'"'"')[0]))"\n'
+      ;;
+    *)
+      printf '    $ua = $UA_WINDOWS | Get-Random\n'
+      printf '    Write-TrafficLog "--- session start (ua: $($ua.Split('"'"'/'"'"')[0]))"\n'
+      ;;
+  esac
+
+  if [ -n "$raw_urls" ]; then
+    printf '\n    $urls = @(\n'
+    while IFS= read -r url; do
+      [ -z "$url" ] && continue
+      url="${url#https://}"; url="${url#http://}"
+      printf "        'https://%s',\n" "$url"
+    done <<< "$raw_urls"
+    printf '    )\n'
+
+    if [ "$profile" = "developer" ]; then
+      printf "    \$toolDomains = @('npmjs.org', 'pypi.org', 'hub.docker.com', 'pkg.go.dev', 'crates.io')\n"
+      printf '    foreach ($url in ($urls | Get-Random -Count (Get-Random -Minimum 3 -Maximum 6))) {\n'
+      printf '        $selectedUa = if ($toolDomains | Where-Object { $url -match $_ }) { $toolUa } else { $browserUa }\n'
+      printf '        Invoke-Traffic -Uri $url -UserAgent $selectedUa\n'
+      printf '        Start-RandomDelay -Min 5 -Max 20\n'
+      printf '    }\n'
+    else
+      printf '    foreach ($url in ($urls | Get-Random -Count (Get-Random -Minimum 3 -Maximum 6))) {\n'
+      printf '        Invoke-Traffic -Uri $url -UserAgent $ua\n'
+      printf '        Start-RandomDelay -Min 8 -Max 25\n'
+      printf '    }\n'
+    fi
+  fi
+
+  if [ -n "$providers" ] && [ -n "$raw_prompts" ]; then
+    local genai_ua="\$ua"
+    [ "$profile" = "developer" ] && genai_ua='$browserUa'
+
+    printf '\n    $genaiProviders = @(\n'
+    for p in $providers; do
+      printf "        '%s',\n" "$p"
+    done
+    printf '    )\n'
+
+    printf '    $genaiPrompts = @(\n'
+    local esc
+    while IFS= read -r prompt; do
+      [ -z "$prompt" ] && continue
+      esc="${prompt//\'/\'\'}"
+      printf "        '%s',\n" "$esc"
+    done <<< "$raw_prompts"
+    printf '    )\n'
+
+    printf '    Invoke-GenAIWebPrompt -Provider ($genaiProviders | Get-Random) -Prompt ($genaiPrompts | Get-Random) -UserAgent %s\n' "$genai_ua"
+  fi
+
+  printf '}\n\n'
+}
+
+# Generates a complete win-traffic.ps1 to output_file from loaded TSV data.
+# _TSV_URLS / _TSV_PROVIDERS / _TSV_PROMPTS must be populated by _load_tsv beforehand.
+# $SCRIPT_VERSION in the generated file encodes VERSION + a short TSV hash so that
+# a TSV change alone (without a script version bump) still triggers a re-push.
+_generate_win_traffic_ps1() {
+  local output_file="$1"
+
+  if [ ${#_TSV_URLS[@]} -eq 0 ]; then
+    echo -e "${RED}  TSV data not loaded — cannot generate win-traffic.ps1${NC}"
+    return 1
+  fi
+
+  local tsv_hash
+  tsv_hash=$(sha256sum "${LAB_TRAFFIC_TSV:-}" 2>/dev/null | awk '{print $1}' | head -c 8)
+  local script_ver="${VERSION}-${tsv_hash:-manual}"
+
+  {
+    # --- Static: header + param block ---
+    cat << 'PSEOF'
+#Requires -Version 5.1
+<#
+.SYNOPSIS
+    Windows traffic generator for Zscaler lab environments.
+    Generated by proxmox-lab.sh from lab-traffic.tsv -- do not edit by hand.
+    Re-run "Install / Update Traffic Generator Script" from Windows Tools to regenerate.
+
+.PARAMETER Profile
+    Traffic persona: office-worker, sales, developer, executive, threat
+
+.PARAMETER DurationMinutes
+    How long to run before exiting cleanly. Default: 30.
+#>
+param(
+    [Parameter(Mandatory = $true)]
+    [ValidateSet("office-worker", "sales", "developer", "executive", "threat")]
+    [string]$Profile,
+
+    [Parameter(Mandatory = $false)]
+    [int]$DurationMinutes = 30
+)
+
+PSEOF
+
+    # --- Dynamic: version string (VERSION + short TSV hash) ---
+    printf '$SCRIPT_VERSION = "%s"\n\n' "$script_ver"
+
+    # --- Static: runtime settings, logging, timing, UA pools, Invoke-Traffic ---
+    cat << 'PSEOF'
+$ProgressPreference    = 'SilentlyContinue'
+$ErrorActionPreference = 'Continue'
+
+# ---------------------------------------------------------------------------
+# Logging
+# ---------------------------------------------------------------------------
+$LOG_DIR  = "C:\ProgramData\proxmox-lab"
+$LOG_FILE = "$LOG_DIR\traffic-gen.log"
+
+if (-not (Test-Path $LOG_DIR)) {
+    New-Item -ItemType Directory -Path $LOG_DIR -Force | Out-Null
+}
+
+function Write-TrafficLog {
+    param([string]$Message, [string]$Level = "INFO")
+    $ts   = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+    $line = "[$ts] [$Profile] [$Level] $Message"
+    Add-Content -Path $LOG_FILE -Value $line -ErrorAction SilentlyContinue
+    Write-Host $line
+}
+
+# ---------------------------------------------------------------------------
+# Timing
+# ---------------------------------------------------------------------------
+$SCRIPT_START = Get-Date
+$END_TIME     = $SCRIPT_START.AddMinutes($DurationMinutes)
+
+function Test-TimeRemaining { return (Get-Date) -lt $END_TIME }
+
+function Start-RandomDelay {
+    param([int]$Min = 5, [int]$Max = 45)
+    if (-not (Test-TimeRemaining)) { return }
+    Start-Sleep -Seconds (Get-Random -Minimum $Min -Maximum ($Max + 1))
+}
+
+# ---------------------------------------------------------------------------
+# User agents
+# ---------------------------------------------------------------------------
+$UA_WINDOWS = @(
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:133.0) Gecko/20100101 Firefox/133.0",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36 Edg/131.0.0.0"
+)
+
+$UA_MAC = @(
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_7_1) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Safari/605.1.15",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.6 Safari/605.1.15",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_6) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+)
+
+$UA_DEV_BROWSER = @(
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_7_1) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+)
+
+$UA_DEV_TOOL = @(
+    "git/2.47.1",
+    "npm/10.9.2 node/v22.12.0 win32 x64",
+    "python-requests/2.32.3",
+    "Docker/27.4.0 go/go1.23.3 git-commit/6b50c08 kernel/10.0.26100.2454 os/windows arch/amd64"
+)
+
+# ---------------------------------------------------------------------------
+# Core HTTP helper
+# ---------------------------------------------------------------------------
+function Invoke-Traffic {
+    param(
+        [string]   $Uri,
+        [string]   $UserAgent,
+        [string]   $Method      = "GET",
+        [hashtable]$Headers     = @{},
+        [string]   $Body,
+        [string]   $ContentType
+    )
+
+    if (-not (Test-TimeRemaining)) { return }
+
+    try {
+        $params = @{
+            Uri             = $Uri
+            UserAgent       = $UserAgent
+            Method          = $Method
+            TimeoutSec      = 20
+            UseBasicParsing = $true
+        }
+        if ($Headers.Count -gt 0) { $params.Headers     = $Headers }
+        if ($Body)                 { $params.Body        = $Body }
+        if ($ContentType)          { $params.ContentType = $ContentType }
+
+        $response = Invoke-WebRequest @params
+        Write-TrafficLog "$Method $Uri $($response.StatusCode)"
+    }
+    catch [System.Net.WebException] {
+        $code = if ($_.Exception.Response) { [int]$_.Exception.Response.StatusCode } else { "TIMEOUT" }
+        Write-TrafficLog "$Method $Uri $code"
+    }
+    catch {
+        $msg = ($_.Exception.Message -replace '\r?\n', ' ').Substring(0, [Math]::Min(80, $_.Exception.Message.Length))
+        Write-TrafficLog "$Method $Uri ERR ($msg)"
+    }
+}
+
+# ---------------------------------------------------------------------------
+# GenAI web prompt helpers
+# Mirrors genai_web_prompt() from Linux containers.
+# ZIA captures the outbound request body before the server returns 401/403,
+# generating both a prompt capture event and any applicable DLP events.
+# ---------------------------------------------------------------------------
+function Invoke-ChatGPTPrompt {
+    param([string]$Prompt, [string]$UserAgent)
+    $msgId    = [System.Guid]::NewGuid().ToString()
+    $convId   = [System.Guid]::NewGuid().ToString()
+    $parentId = [System.Guid]::NewGuid().ToString()
+    $deviceId = [System.Guid]::NewGuid().ToString()
+    $bodyObj  = @{
+        action              = 'next'
+        messages            = @(@{
+            id      = $msgId
+            author  = @{ role = 'user' }
+            content = @{ content_type = 'text'; parts = @($Prompt) }
+        })
+        conversation_id     = $convId
+        parent_message_id   = $parentId
+        model               = 'auto'
+        timezone_offset_min = 300
+        timezone            = 'America/New_York'
+        conversation_mode   = @{ kind = 'primary_assistant' }
+    }
+    $body = $bodyObj | ConvertTo-Json -Depth 10 -Compress
+    Invoke-Traffic -Uri 'https://chatgpt.com/backend-api/f/conversation' `
+        -Method 'POST' -Body $body -ContentType 'application/json' -UserAgent $UserAgent `
+        -Headers @{ Authorization = 'Bearer dlp-test'; 'Oai-Language' = 'en-US'; 'Oai-Device-Id' = $deviceId }
+}
+
+function Invoke-PerplexityPrompt {
+    param([string]$Prompt, [string]$UserAgent)
+    $reqId      = [System.Guid]::NewGuid().ToString()
+    $frontendId = [System.Guid]::NewGuid().ToString()
+    $bodyObj    = @{
+        params = @{
+            dsl_query        = $Prompt
+            query_str        = $Prompt
+            language         = 'en-US'
+            timezone         = 'America/New_York'
+            search_focus     = 'internet'
+            sources          = @('web')
+            mode             = 'copilot'
+            model_preference = 'turbo'
+            is_related_query = $false
+            frontend_uuid    = $frontendId
+        }
+    }
+    $body = $bodyObj | ConvertTo-Json -Depth 5 -Compress
+    Invoke-Traffic -Uri 'https://www.perplexity.ai/rest/sse/perplexity_ask' `
+        -Method 'POST' -Body $body -ContentType 'application/json' -UserAgent $UserAgent `
+        -Headers @{ 'X-Perplexity-Request-Reason' = 'perplexity-query-state-provider'; 'X-Request-Id' = $reqId }
+}
+
+function Invoke-MistralPrompt {
+    param([string]$Prompt, [string]$UserAgent)
+    $bodyObj = @{
+        '0' = @{
+            json = @{
+                content   = @(@{ type = 'text'; text = $Prompt })
+                features  = @('beta-websearch')
+                incognito = $false
+            }
+        }
+    }
+    $body = $bodyObj | ConvertTo-Json -Depth 6 -Compress
+    Invoke-Traffic -Uri 'https://chat.mistral.ai/api/trpc/message.newChat?batch=1' `
+        -Method 'POST' -Body $body -ContentType 'application/json' -UserAgent $UserAgent `
+        -Headers @{ 'Trpc-Accept' = 'application/jsonl'; 'X-Trpc-Source' = 'nextjs-react' }
+}
+
+function Invoke-GenAIWebPrompt {
+    param([string]$Provider, [string]$Prompt, [string]$UserAgent)
+    $homepages = @{
+        chatgpt    = 'https://chatgpt.com'
+        perplexity = 'https://www.perplexity.ai'
+        mistral    = 'https://chat.mistral.ai'
+    }
+    if ($homepages.ContainsKey($Provider)) {
+        Invoke-Traffic -Uri $homepages[$Provider] -UserAgent $UserAgent
+        Start-RandomDelay -Min 3 -Max 8
+    }
+    switch ($Provider) {
+        'chatgpt'    { Invoke-ChatGPTPrompt    -Prompt $Prompt -UserAgent $UserAgent }
+        'perplexity' { Invoke-PerplexityPrompt -Prompt $Prompt -UserAgent $UserAgent }
+        'mistral'    { Invoke-MistralPrompt    -Prompt $Prompt -UserAgent $UserAgent }
+    }
+}
+
+PSEOF
+
+    # --- Dynamic: generated profile session functions ---
+    for profile in "office-worker" "sales" "developer" "executive"; do
+      _generate_win_ps1_profile "$profile"
+    done
+
+    # --- Static: threat profile (not TSV-driven) + main loop ---
+    cat << 'PSEOF'
+# ---------------------------------------------------------------------------
+# Profile: threat (static - security test events)
+#   AV:     EICAR test file download
+#   DLP:    POST fake SSN+CCN to public HTTPS endpoint
+#   DLP:    POST PII-in-prompt to real AI API endpoints (no valid key - ZIA
+#           inspects the outbound body before the 401 response arrives)
+#   Policy: HTTP access to blocked personal cloud storage sites
+# ---------------------------------------------------------------------------
+function Invoke-ThreatSession {
+    $ua = $UA_WINDOWS | Get-Random
+    Write-TrafficLog "--- threat session start ---"
+
+    # --- Policy violation: personal cloud storage ---
+    Write-TrafficLog "policy-violation: accessing personal cloud storage"
+    $policySites = @(
+        "https://www.dropbox.com",
+        "https://wetransfer.com",
+        "https://mega.nz",
+        "https://www.box.com",
+        "https://www.mediafire.com"
+    )
+    foreach ($url in $policySites) {
+        Invoke-Traffic -Uri $url -UserAgent $ua
+        Start-RandomDelay -Min 3 -Max 8
+    }
+
+    # --- AV: EICAR test file ---
+    Write-TrafficLog "eicar: downloading EICAR test file"
+    Invoke-Traffic -Uri "https://www.eicar.org/download/eicar.com.txt" -UserAgent $ua
+    Invoke-Traffic -Uri "https://www.eicar.org/download/eicar_com.zip" -UserAgent $ua
+    Start-RandomDelay -Min 3 -Max 8
+
+    # --- DLP: POST fake PII to public endpoint ---
+    Write-TrafficLog "dlp-network: POST fake SSN/CCN to HTTPS endpoint"
+    $body = "firstname=John&lastname=Smith&ssn=123-45-6789&ccn=4111111111111111&amount=9500&account=87654321"
+    Invoke-Traffic -Uri "https://httpbin.org/post" `
+        -Method "POST" -Body $body -ContentType "application/x-www-form-urlencoded" -UserAgent $ua
+    Start-RandomDelay -Min 3 -Max 8
+
+    # Shared PII payload for GenAI DLP tests
+    $piiPrompt = @(
+        "Summarize this employee record: John Smith, DOB 03/15/1985, SSN 123-45-6789, salary $92000, perf rating 4.2.",
+        "Draft a collections letter to John Smith at 123 Main St Springfield IL 62701, account 87654321, balance $5,240.",
+        "Analyze this patient: Jane Doe, DOB 07/22/1978, MRN 456789, diagnosis hypertension, insurance ID HMO-987654."
+    ) | Get-Random
+
+    # --- DLP: GenAI prompt with PII - OpenAI ---
+    Write-TrafficLog "dlp-genai-prompt: POST PII to OpenAI API"
+    $openaiPayload = @{
+        model    = "gpt-4"
+        messages = @(@{ role = "user"; content = $piiPrompt })
+    } | ConvertTo-Json -Depth 3
+    Invoke-Traffic -Uri "https://api.openai.com/v1/chat/completions" `
+        -Method "POST" -Body $openaiPayload -ContentType "application/json" -UserAgent $ua `
+        -Headers @{ Authorization = "Bearer sk-dlp-test-no-valid-key-zscaler-inspection-target" }
+    Start-RandomDelay -Min 3 -Max 8
+
+    # --- DLP: GenAI prompt with PII - Anthropic ---
+    Write-TrafficLog "dlp-genai-prompt: POST PII to Anthropic API"
+    $anthropicPayload = @{
+        model      = "claude-3-5-sonnet-20241022"
+        max_tokens = 256
+        messages   = @(@{ role = "user"; content = $piiPrompt })
+    } | ConvertTo-Json -Depth 3
+    Invoke-Traffic -Uri "https://api.anthropic.com/v1/messages" `
+        -Method "POST" -Body $anthropicPayload -ContentType "application/json" -UserAgent $ua `
+        -Headers @{
+            "x-api-key"         = "sk-ant-dlp-test-no-valid-key-zscaler-inspection-target"
+            "anthropic-version" = "2023-06-01"
+        }
+    Start-RandomDelay -Min 3 -Max 8
+
+    # --- DLP: GenAI prompt with PII - Google Gemini ---
+    Write-TrafficLog "dlp-genai-prompt: POST PII to Google Gemini API"
+    $geminiPayload = @{
+        contents = @(@{
+            parts = @(@{ text = $piiPrompt })
+        })
+    } | ConvertTo-Json -Depth 4
+    Invoke-Traffic -Uri "https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent?key=dlp-test-no-valid-key" `
+        -Method "POST" -Body $geminiPayload -ContentType "application/json" -UserAgent $ua
+}
+
+# ---------------------------------------------------------------------------
+# Main loop - runs sessions until DurationMinutes expires
+# ---------------------------------------------------------------------------
+Write-TrafficLog "=== started | duration=${DurationMinutes}m | end=$($END_TIME.ToString('HH:mm:ss')) ==="
+
+$sessionCount = 0
+
+while (Test-TimeRemaining) {
+    $sessionCount++
+    Write-TrafficLog "--- session $sessionCount ---"
+
+    switch ($Profile) {
+        "office-worker" { Invoke-OfficeWorkerSession }
+        "sales"         { Invoke-SalesSession }
+        "developer"     { Invoke-DeveloperSession }
+        "executive"     { Invoke-ExecutiveSession }
+        "threat"        { Invoke-ThreatSession }
+    }
+
+    # Pause between sessions (skipped if time already expired)
+    if (Test-TimeRemaining) {
+        Start-RandomDelay -Min 30 -Max 90
+    }
+}
+
+$elapsed = [int]((Get-Date) - $SCRIPT_START).TotalMinutes
+Write-TrafficLog "=== done | sessions=$sessionCount elapsed=${elapsed}m ==="
+PSEOF
+
+  } > "$output_file"
+}
+
 cmd_windows_install_traffic() {
   _load_config
   _load_ct_data
@@ -4229,18 +4688,22 @@ cmd_windows_install_traffic() {
 
   _select_win_vms || return 1
 
-  echo ""
-  read_with_default "win-traffic.ps1 path" "${WIN_TRAFFIC_PS1:-/root/win-traffic.ps1}" "WIN_TRAFFIC_PS1"
-  if [ ! -f "$WIN_TRAFFIC_PS1" ]; then
-    echo -e "${RED}  Error: File not found: ${WIN_TRAFFIC_PS1}${NC}"
+  # Ensure TSV is available and loaded — needed to generate the PS1
+  _ensure_lab_traffic_tsv || return 1
+  _load_tsv "$LAB_TRAFFIC_TSV" || return 1
+
+  # Generate win-traffic.ps1 from TSV data into a temp file
+  local gen_tmp
+  gen_tmp=$(mktemp /tmp/proxmox-lab-win-traffic.XXXXXX)
+  echo "  Generating win-traffic.ps1 from lab-traffic.tsv..."
+  if ! _generate_win_traffic_ps1 "$gen_tmp"; then
+    rm -f "$gen_tmp"
     return 1
   fi
 
   local local_ver
-  local_ver=$(grep -m1 '^\$SCRIPT_VERSION' "$WIN_TRAFFIC_PS1" 2>/dev/null | sed 's/.*"\(.*\)".*/\1/')
-  if [ -n "$local_ver" ]; then
-    echo -e "  ${CYAN}Local version: ${local_ver}${NC}"
-  fi
+  local_ver=$(grep -m1 '^\$SCRIPT_VERSION' "$gen_tmp" 2>/dev/null | sed 's/.*"\(.*\)".*/\1/')
+  [ -n "$local_ver" ] && echo -e "  ${CYAN}Version: ${local_ver}${NC}"
 
   echo ""
   local vmid
@@ -4275,7 +4738,7 @@ cmd_windows_install_traffic() {
     fi
 
     echo "  Copying win-traffic.ps1..."
-    _win_vm_write_file "$_vm_node" "$vmid" "$WIN_TRAFFIC_PS1" 'C:\ProgramData\proxmox-lab\win-traffic.ps1'
+    _win_vm_write_file "$_vm_node" "$vmid" "$gen_tmp" 'C:\ProgramData\proxmox-lab\win-traffic.ps1'
 
     if [ "$remote_ver" = "none" ] || [ -z "$remote_ver" ]; then
       echo -e "  ${GREEN}  ✓ Installed${local_ver:+ v${local_ver}}${NC}"
@@ -4284,6 +4747,7 @@ cmd_windows_install_traffic() {
     fi
   done
 
+  rm -f "$gen_tmp"
   echo ""
   _maybe_save_config
 }
@@ -4416,56 +4880,41 @@ cmd_windows_configure_tasks() {
   _maybe_save_config
 }
 
-# Ensures win-traffic.ps1 and setup-scheduled-tasks.ps1 exist on this host.
-# Checks configured paths first; if missing, checks the script's own directory;
-# if still missing, silently fetches from GitHub main and saves there.
-# Updates in-session vars so the current session sees the correct paths.
+# Ensures setup-scheduled-tasks.ps1 exists on this host.
+# Checks configured path first; if missing, checks the script's own directory;
+# if still missing, fetches from GitHub main and saves there.
+# Updates in-session var so the current session sees the correct path.
 _ensure_win_scripts() {
   local script_dir
   script_dir="$(dirname "$(realpath "$0")")"
   local base_url="https://raw.githubusercontent.com/mpreissner/proxmox-lab-scripts/main"
+  local filename="setup-scheduled-tasks.ps1"
+  local configured_path="${WIN_SETUP_PS1:-}"
+  local default_path="${script_dir}/${filename}"
 
-  local filename var_name configured_path default_path
-  for filename in "win-traffic.ps1" "setup-scheduled-tasks.ps1"; do
-    if [[ "$filename" == "win-traffic.ps1" ]]; then
-      var_name="WIN_TRAFFIC_PS1"
-    else
-      var_name="WIN_SETUP_PS1"
-    fi
-    configured_path="${!var_name}"
-    default_path="${script_dir}/${filename}"
+  # Found at configured path — use it
+  if [ -n "$configured_path" ] && [ -f "$configured_path" ]; then
+    return 0
+  fi
 
-    # Found at configured path — skip only if it already has $SCRIPT_VERSION
-    if [ -n "$configured_path" ] && [ -f "$configured_path" ]; then
-      if grep -q '^\$SCRIPT_VERSION' "$configured_path" 2>/dev/null; then
-        continue
-      fi
-      echo -e "  ${CYAN}${filename} predates versioning — fetching updated version...${NC}"
-      configured_path=""  # fall through to re-fetch
-    fi
+  # Found in script directory — use it
+  if [ -f "$default_path" ]; then
+    WIN_SETUP_PS1="$default_path"
+    return 0
+  fi
 
-    # Found in script directory — use it only if it has $SCRIPT_VERSION
-    if [ -f "$default_path" ]; then
-      if grep -q '^\$SCRIPT_VERSION' "$default_path" 2>/dev/null; then
-        printf -v "$var_name" '%s' "$default_path"
-        continue
-      fi
-      # File exists but predates versioning — fall through to overwrite
-    fi
-
-    # Not found, or found but stale — fetch from GitHub
-    echo -e "  ${CYAN}${filename} not found — fetching from GitHub...${NC}"
-    local tmp
-    tmp=$(mktemp /tmp/proxmox-lab-ps1.XXXXXX)
-    if curl -fsSL --connect-timeout 10 "${base_url}/${filename}" -o "$tmp" 2>/dev/null; then
-      mv "$tmp" "$default_path"
-      printf -v "$var_name" '%s' "$default_path"
-      echo -e "  ${GREEN}✓ Saved to ${default_path}${NC}"
-    else
-      rm -f "$tmp"
-      echo -e "  ${YELLOW}  Could not fetch ${filename} — set path manually when prompted.${NC}"
-    fi
-  done
+  # Not found — fetch from GitHub
+  echo -e "  ${CYAN}${filename} not found — fetching from GitHub...${NC}"
+  local tmp
+  tmp=$(mktemp /tmp/proxmox-lab-ps1.XXXXXX)
+  if curl -fsSL --connect-timeout 10 "${base_url}/${filename}" -o "$tmp" 2>/dev/null; then
+    mv "$tmp" "$default_path"
+    WIN_SETUP_PS1="$default_path"
+    echo -e "  ${GREEN}✓ Saved to ${default_path}${NC}"
+  else
+    rm -f "$tmp"
+    echo -e "  ${YELLOW}  Could not fetch ${filename} — set path manually when prompted.${NC}"
+  fi
 }
 
 cmd_windows_tools() {
