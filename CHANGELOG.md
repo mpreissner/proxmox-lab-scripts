@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.2.3] - 2026-02-18
+
+### Fixed
+- `create-template`: containers were deployed with no timezone set, defaulting to UTC. Added step 7 (Timezone) to the template creation flow — prompts for a timezone string (e.g. `America/New_York`), defaulting to the Proxmox host's current timezone detected via `timedatectl`. `tzdata` is now included in the `apk add` package list; the chosen timezone is applied to the template via `/etc/localtime` and `/etc/timezone` so all clones inherit it automatically. `TIMEZONE` persisted to `~/.proxmox-lab.conf`. TLS certificate prompt renumbered to step 8.
+- `dlp-genai-prompt.sh`: previously posted to developer API endpoints (`api.openai.com`, `api.anthropic.com`, `generativelanguage.googleapis.com`). ZIA inspects these as generic HTTPS traffic — DLP fires on the PII in the request body but no prompt capture event is generated. Rewritten to use the same web app endpoints as `genai_web_prompt()` (ChatGPT `chatgpt.com/backend-api/f/conversation`, Perplexity `perplexity.ai/rest/sse/perplexity_ask`, Mistral `chat.mistral.ai/api/trpc/message.newChat`). ZIA recognises these as GenAI web app traffic, so both a DLP block event and a prompt capture event are generated from the same request. PII prompts rewritten as realistic business scenarios (customer verification, insurance claim, HR onboarding) to better represent accidental data exposure. Platform is selected randomly per run.
+
 ## [3.2.2] - 2026-02-17
 
 ### Added

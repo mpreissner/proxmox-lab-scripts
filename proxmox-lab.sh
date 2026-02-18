@@ -13,7 +13,7 @@ YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 CYAN='\033[0;36m'
 NC='\033[0m'
-VERSION="3.2.2"
+VERSION="3.2.3"
 
 CONFIG_FILE="${HOME}/.proxmox-lab.conf"
 if [ -f "$CONFIG_FILE" ]; then
@@ -102,6 +102,7 @@ CERT_PATH="${CERT_PATH:-}"
 WIN_TRAFFIC_PS1="${WIN_TRAFFIC_PS1:-/root/win-traffic.ps1}"
 WIN_SETUP_PS1="${WIN_SETUP_PS1:-/root/setup-scheduled-tasks.ps1}"
 CLONE_TYPE="${CLONE_TYPE:-full}"
+TIMEZONE="${TIMEZONE:-}"
 LAB_TRAFFIC_TSV="${LAB_TRAFFIC_TSV:-}"
 LAB_TRAFFIC_TSV_HASH="${LAB_TRAFFIC_TSV_HASH:-}"
 EOF
@@ -710,9 +711,20 @@ print(' '.join(pools))
   echo -e "${BLUE}6. Network Configuration${NC}"
   read_with_default "Bridge" "${BRIDGE:-vmbr0}" "BRIDGE"
 
-  # 7. TLS Inspection Certificate (optional)
+  # 7. Timezone
   echo ""
-  echo -e "${BLUE}7. TLS Inspection Certificate (optional)${NC}"
+  echo -e "${BLUE}7. Container Timezone${NC}"
+  _host_tz=$(timedatectl show --property=Timezone --value 2>/dev/null \
+    || cat /etc/timezone 2>/dev/null \
+    || echo "UTC")
+  _host_tz="${_host_tz//[[:space:]]/}"  # strip any stray whitespace
+  echo "Host timezone: ${_host_tz}"
+  echo "Containers will use this timezone for business-hours enforcement and cron scheduling."
+  read_with_default "Timezone" "${TIMEZONE:-$_host_tz}" "TIMEZONE"
+
+  # 8. TLS Inspection Certificate (optional)
+  echo ""
+  echo -e "${BLUE}8. TLS Inspection Certificate (optional)${NC}"
   echo "If your network uses TLS inspection (e.g., Zscaler), provide the path"
   echo "to the root CA certificate on this host. It will be installed into the"
   echo "template so all cloned containers trust it automatically."
@@ -734,6 +746,7 @@ print(' '.join(pools))
   echo "Memory:         ${MEMORY} MB"
   echo "CPU Cores:      ${CORES}"
   echo "Bridge:         ${BRIDGE}"
+  echo "Timezone:       ${TIMEZONE}"
   if [ -n "${CERT_PATH:-}" ]; then
     echo "Certificate:    ${CERT_PATH}"
   else
@@ -780,7 +793,11 @@ print(' '.join(pools))
   echo "Installing base packages..."
   run_on_node "$NODE" pct exec $TEMPLATE_ID -- sh -c "
     apk update
-    apk add curl wget bind-tools bash jq python3 py3-pip dcron nano vim openrc ca-certificates
+    apk add curl wget bind-tools bash jq python3 py3-pip dcron nano vim openrc ca-certificates tzdata
+
+    # Set timezone
+    cp /usr/share/zoneinfo/${TIMEZONE} /etc/localtime
+    echo ${TIMEZONE} > /etc/timezone
 
     # Enable cron
     rc-update add dcron default
@@ -2242,29 +2259,66 @@ EOF
     dlp-genai-prompt)
       run_on_node "$CT_NODE" pct exec $ctid -- bash -c 'cat > /opt/traffic-gen/security-tests/dlp-genai-prompt.sh' <<'EOF'
 #!/bin/bash
+# DLP test: Submit a prompt containing fake PII to GenAI web app endpoints.
+# Uses the same endpoints as genai_web_prompt() so ZIA recognises them as
+# GenAI web app traffic and fires BOTH a DLP event and a prompt capture event.
 FAKE_SSN="$((RANDOM % 900 + 100))-$((RANDOM % 90 + 10))-$((RANDOM % 9000 + 1000))"
 FAKE_CCN="4111$((RANDOM % 9000 + 1000))$((RANDOM % 9000 + 1000))$((RANDOM % 9000 + 1000))"
-PLATFORMS=("openai" "anthropic" "google")
+
+PROMPTS=(
+  "I need help drafting a customer verification email. The customer's SSN is ${FAKE_SSN} and their Visa card on file is ${FAKE_CCN}. Can you write a professional confirmation message?"
+  "Can you help me fill out this insurance claim form? Claimant SSN: ${FAKE_SSN}. Payment card for reimbursement: ${FAKE_CCN}. What fields should I complete first?"
+  "I'm onboarding a new employee. Their SSN for payroll is ${FAKE_SSN} and the corporate card we're issuing is ${FAKE_CCN}. What HR paperwork should I start with?"
+)
+PROMPT="${PROMPTS[$((RANDOM % ${#PROMPTS[@]}))]}"
+
+PLATFORMS=("chatgpt" "perplexity" "mistral")
 PLATFORM="${PLATFORMS[$((RANDOM % 3))]}"
+
+u1=$(cat /proc/sys/kernel/random/uuid)
+u2=$(cat /proc/sys/kernel/random/uuid)
+u3=$(cat /proc/sys/kernel/random/uuid)
+jp=$(printf '%s' "$PROMPT" | sed 's/\\/\\\\/g; s/"/\\"/g')
+
+echo "[$(date)] DLP test: Submitting prompt with PII via ${PLATFORM} web endpoint"
+
 case "$PLATFORM" in
-  openai)
-    URL="https://api.openai.com/v1/chat/completions"
-    PAYLOAD="{\"model\":\"gpt-4o\",\"messages\":[{\"role\":\"user\",\"content\":\"I need help verifying my identity. My SSN is ${FAKE_SSN} and my credit card is ${FAKE_CCN}. Please confirm my account access.\"}]}"
+  chatgpt)
+    curl -s -m 20 \
+      -X POST "https://chatgpt.com/backend-api/f/conversation" \
+      -H "Content-Type: application/json" \
+      -H "Accept: text/event-stream" \
+      -H "Authorization: Bearer lab-session-token" \
+      -H "Oai-Language: en-US" \
+      -H "Oai-Device-Id: ${u1}" \
+      -H "User-Agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36" \
+      -d "{\"action\":\"next\",\"messages\":[{\"id\":\"${u2}\",\"author\":{\"role\":\"user\"},\"content\":{\"content_type\":\"text\",\"parts\":[\"${jp}\"]},\"metadata\":{}}],\"conversation_id\":\"${u1}\",\"parent_message_id\":\"${u3}\",\"model\":\"auto\",\"timezone_offset_min\":300,\"timezone\":\"America/New_York\",\"conversation_mode\":{\"kind\":\"primary_assistant\"}}" \
+      > /dev/null 2>&1 || true
     ;;
-  anthropic)
-    URL="https://api.anthropic.com/v1/messages"
-    PAYLOAD="{\"model\":\"claude-3-5-sonnet-20241022\",\"max_tokens\":100,\"messages\":[{\"role\":\"user\",\"content\":\"I need help verifying my identity. My SSN is ${FAKE_SSN} and my credit card is ${FAKE_CCN}. Please confirm my account access.\"}]}"
+  perplexity)
+    rid=$(cat /proc/sys/kernel/random/uuid)
+    curl -s -m 20 \
+      -X POST "https://www.perplexity.ai/rest/sse/perplexity_ask" \
+      -H "Content-Type: application/json" \
+      -H "Accept: text/event-stream" \
+      -H "X-Perplexity-Request-Reason: perplexity-query-state-provider" \
+      -H "X-Request-Id: ${rid}" \
+      -H "User-Agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36" \
+      -d "{\"params\":{\"dsl_query\":\"${jp}\",\"query_str\":\"${jp}\",\"language\":\"en-US\",\"timezone\":\"America/New_York\",\"search_focus\":\"internet\",\"sources\":[\"web\"],\"mode\":\"copilot\",\"model_preference\":\"turbo\",\"is_related_query\":false,\"frontend_uuid\":\"${u1}\"}}" \
+      > /dev/null 2>&1 || true
     ;;
-  google)
-    URL="https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-pro:generateContent"
-    PAYLOAD="{\"contents\":[{\"parts\":[{\"text\":\"I need help verifying my identity. My SSN is ${FAKE_SSN} and my credit card is ${FAKE_CCN}. Please confirm my account access.\"}]}]}"
+  mistral)
+    curl -s -m 20 \
+      -X POST "https://chat.mistral.ai/api/trpc/message.newChat?batch=1" \
+      -H "Content-Type: application/json" \
+      -H "Accept: application/jsonl" \
+      -H "Trpc-Accept: application/jsonl" \
+      -H "X-Trpc-Source: nextjs-react" \
+      -H "User-Agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36" \
+      -d "{\"0\":{\"json\":{\"content\":[{\"type\":\"text\",\"text\":\"${jp}\"}],\"features\":[\"beta-websearch\"],\"incognito\":false}}}" \
+      > /dev/null 2>&1 || true
     ;;
 esac
-echo "[$(date)] DLP test: Submitting prompt with PII to GenAI API (${PLATFORM})"
-curl -s -m 15 -X POST \
-  -H "Content-Type: application/json" \
-  -H "Authorization: Bearer dlp-test" \
-  -d "$PAYLOAD" "$URL" > /dev/null 2>&1 || true
 EOF
       ;;
 
@@ -3678,7 +3732,7 @@ cmd_system_cleanup() {
     while IFS= read -r _tmpl; do
       [ -n "$_tmpl" ] && { ALPINE_IMAGE_NODES+=("$_node"); ALPINE_IMAGE_PATHS+=("$_tmpl"); }
     done < <(run_on_node "$_node" pveam list "${_img_store}" 2>/dev/null | \
-      awk '/^alpine-.*\.tar\.xz/{print $1}' 2>/dev/null)
+      awk '/alpine-.*\.tar\.xz/{print $1}' 2>/dev/null)
   done
 
   if [ ${#LAB_CTIDS[@]} -eq 0 ] && [ -z "$TEMPLATE_CTID" ] && [ ${#ALPINE_IMAGE_PATHS[@]} -eq 0 ]; then
@@ -3784,7 +3838,7 @@ cmd_system_cleanup() {
     for i in "${!ALPINE_IMAGE_PATHS[@]}"; do
       _node="${ALPINE_IMAGE_NODES[$i]}"
       _tmpl="${ALPINE_IMAGE_PATHS[$i]}"
-      if run_on_node "$_node" pveam remove "${_img_store}" "${_tmpl}" 2>/dev/null; then
+      if run_on_node "$_node" pveam remove "${_tmpl}" 2>/dev/null; then
         echo -e "${GREEN}✓ Removed ${_tmpl} from ${_node}${NC}"
       else
         echo -e "${RED}✗ Failed to remove ${_tmpl} from ${_node}${NC}"
