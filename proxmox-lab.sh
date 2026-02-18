@@ -13,7 +13,7 @@ YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 CYAN='\033[0;36m'
 NC='\033[0m'
-VERSION="3.3.0"
+VERSION="3.3.1"
 
 CONFIG_FILE="${HOME}/.proxmox-lab.conf"
 if [ -f "$CONFIG_FILE" ]; then
@@ -4242,8 +4242,9 @@ _generate_win_ps1_profile() {
   local raw_prompts="${_TSV_PROMPTS[$profile]:-}"
 
   # PascalCase function name: office-worker -> OfficeWorker
+  # OFS="" must be in BEGIN so it is set before awk reconstructs $0 on field assignment
   local func_name
-  func_name=$(printf '%s' "$profile" | awk -F'-' '{for(i=1;i<=NF;i++) $i=toupper(substr($i,1,1)) substr($i,2); OFS=""; print}')
+  func_name=$(printf '%s' "$profile" | awk -F'-' 'BEGIN{OFS=""} {for(i=1;i<=NF;i++) $i=toupper(substr($i,1,1)) substr($i,2); print}')
 
   printf '# ---------------------------------------------------------------------------\n'
   printf '# Profile: %s (generated from lab-traffic.tsv)\n' "$profile"
@@ -4267,12 +4268,24 @@ _generate_win_ps1_profile() {
   esac
 
   if [ -n "$raw_urls" ]; then
-    printf '\n    $urls = @(\n'
+    # Collect URLs into an array so we can emit commas between items only (no trailing comma)
+    local url_items=()
     while IFS= read -r url; do
       [ -z "$url" ] && continue
       url="${url#https://}"; url="${url#http://}"
-      printf "        'https://%s',\n" "$url"
+      url_items+=("$url")
     done <<< "$raw_urls"
+
+    printf '\n    $urls = @(\n'
+    local url_count=${#url_items[@]}
+    local ui
+    for (( ui=0; ui<url_count; ui++ )); do
+      if (( ui < url_count - 1 )); then
+        printf "        'https://%s',\n" "${url_items[$ui]}"
+      else
+        printf "        'https://%s'\n" "${url_items[$ui]}"
+      fi
+    done
     printf '    )\n'
 
     if [ "$profile" = "developer" ]; then
@@ -4294,19 +4307,42 @@ _generate_win_ps1_profile() {
     local genai_ua="\$ua"
     [ "$profile" = "developer" ] && genai_ua='$browserUa'
 
-    printf '\n    $genaiProviders = @(\n'
+    # Collect providers and prompts into arrays for comma-safe output
+    local prov_items=()
     for p in $providers; do
-      printf "        '%s',\n" "$p"
+      prov_items+=("$p")
     done
-    printf '    )\n'
 
-    printf '    $genaiPrompts = @(\n'
+    local prompt_items=()
     local esc
     while IFS= read -r prompt; do
       [ -z "$prompt" ] && continue
       esc="${prompt//\'/\'\'}"
-      printf "        '%s',\n" "$esc"
+      prompt_items+=("$esc")
     done <<< "$raw_prompts"
+
+    printf '\n    $genaiProviders = @(\n'
+    local prov_count=${#prov_items[@]}
+    local pi
+    for (( pi=0; pi<prov_count; pi++ )); do
+      if (( pi < prov_count - 1 )); then
+        printf "        '%s',\n" "${prov_items[$pi]}"
+      else
+        printf "        '%s'\n" "${prov_items[$pi]}"
+      fi
+    done
+    printf '    )\n'
+
+    printf '    $genaiPrompts = @(\n'
+    local prompt_count=${#prompt_items[@]}
+    local pri
+    for (( pri=0; pri<prompt_count; pri++ )); do
+      if (( pri < prompt_count - 1 )); then
+        printf "        '%s',\n" "${prompt_items[$pri]}"
+      else
+        printf "        '%s'\n" "${prompt_items[$pri]}"
+      fi
+    done
     printf '    )\n'
 
     printf '    Invoke-GenAIWebPrompt -Provider ($genaiProviders | Get-Random) -Prompt ($genaiPrompts | Get-Random) -UserAgent %s\n' "$genai_ua"
