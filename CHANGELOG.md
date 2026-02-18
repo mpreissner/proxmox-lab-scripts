@@ -5,6 +5,11 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.2.6] - 2026-02-18
+
+### Added
+- `_warn_image_storage_type()`: called by `pick_image_storage()` after any selection (new or confirmed saved). Checks the storage type via `pvesh get /storage/<pool>`; if NFS or CIFS/SMB, emits a yellow warning recommending local or Ceph RBD instead. NFS/SMB does not support linked clones and can cause issues in multi-node deployments.
+
 ## [3.2.5] - 2026-02-18
 
 ### Fixed
@@ -427,6 +432,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `browse_random()` invalid test operator (`-file` → `-f`) in `random-timing.sh`
 - `RUNNING_CONTAINERS` in `cmd_install_traffic_gen` now correctly filters to running containers only (`pct list` filtered by status field)
 
+[3.2.6]: https://github.com/mpreissner/proxmox-lab-scripts/compare/v3.2.5...v3.2.6
 [3.2.5]: https://github.com/mpreissner/proxmox-lab-scripts/compare/v3.2.4...v3.2.5
 [3.2.4]: https://github.com/mpreissner/proxmox-lab-scripts/compare/v3.2.3...v3.2.4
 [3.2.3]: https://github.com/mpreissner/proxmox-lab-scripts/compare/v3.2.2...v3.2.3

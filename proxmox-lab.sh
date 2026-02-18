@@ -13,7 +13,7 @@ YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 CYAN='\033[0;36m'
 NC='\033[0m'
-VERSION="3.2.5"
+VERSION="3.2.6"
 
 CONFIG_FILE="${HOME}/.proxmox-lab.conf"
 if [ -f "$CONFIG_FILE" ]; then
@@ -206,7 +206,10 @@ pick_image_storage() {
   if [ -n "${IMAGE_STORAGE:-}" ]; then
     echo "  Using saved image storage: ${IMAGE_STORAGE}"
     read -p "  Change image storage? [y/N]: " chg
-    [[ "$chg" =~ ^[Yy]$ ]] || return 0
+    if [[ ! "$chg" =~ ^[Yy]$ ]]; then
+      _warn_image_storage_type "${IMAGE_STORAGE}"
+      return 0
+    fi
   fi
 
   echo "Storage pools with 'vztmpl' content type on ${target_node}:"
@@ -223,6 +226,20 @@ for p in json.load(sys.stdin):
   while [ -z "$IMAGE_STORAGE" ]; do
     read -p "Image storage pool: " IMAGE_STORAGE
   done
+  _warn_image_storage_type "${IMAGE_STORAGE}"
+}
+
+_warn_image_storage_type() {
+  local pool="$1"
+  local _type
+  _type=$(_storage_type "$pool")
+  case "$_type" in
+    nfs|cifs)
+      echo -e "${YELLOW}  ⚠  '${pool}' is ${_type} storage. Local or Ceph RBD is recommended for${NC}"
+      echo -e "${YELLOW}     image storage — NFS/SMB does not support linked clones and can cause${NC}"
+      echo -e "${YELLOW}     issues in multi-node deployments. Use 'local' if unsure.${NC}"
+      ;;
+  esac
 }
 
 # Returns the Proxmox storage type string for a pool (e.g. lvmthin, zfspool, nfs, dir).
