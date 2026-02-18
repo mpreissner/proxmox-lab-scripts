@@ -13,7 +13,7 @@ YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 CYAN='\033[0;36m'
 NC='\033[0m'
-VERSION="3.2.3"
+VERSION="3.2.4"
 
 CONFIG_FILE="${HOME}/.proxmox-lab.conf"
 if [ -f "$CONFIG_FILE" ]; then
@@ -150,13 +150,12 @@ _migrate_config() {
     fi
   fi
 
-  # v3.2.2: seed LAB_TRAFFIC_TSV_HASH from existing file so the first update
-  # doesn't false-positive a customization warning for unmodified installs
-  if version_gt "3.2.2" "$saved_ver"; then
-    if [ -z "${LAB_TRAFFIC_TSV_HASH:-}" ] && [ -f "${LAB_TRAFFIC_TSV:-}" ]; then
-      LAB_TRAFFIC_TSV_HASH=$(sha256sum "$LAB_TRAFFIC_TSV" | awk '{print $1}')
-      changed=true
-    fi
+  # Seed LAB_TRAFFIC_TSV_HASH whenever it is missing — not version-gated, because
+  # the hash column was absent from configs written before it was introduced and
+  # the version_gt "3.2.2" gate previously prevented seeding on 3.2.2→3.2.3 upgrades.
+  if [ -z "${LAB_TRAFFIC_TSV_HASH:-}" ] && [ -f "${LAB_TRAFFIC_TSV:-}" ]; then
+    LAB_TRAFFIC_TSV_HASH=$(sha256sum "$LAB_TRAFFIC_TSV" | awk '{print $1}')
+    changed=true
   fi
 
   # Update SAVED_VERSION in conf
@@ -3665,6 +3664,11 @@ cmd_update() {
         echo -e "  ${GREEN}✓ lab-traffic.tsv (already up to date)${NC}"
       elif [ -n "${LAB_TRAFFIC_TSV_HASH:-}" ] && [ "$local_hash" = "$LAB_TRAFFIC_TSV_HASH" ]; then
         # File unchanged since last download — safe to overwrite
+        mv "$tsv_tmp" "$tsv_dest"
+        LAB_TRAFFIC_TSV_HASH="$remote_hash"
+        echo -e "  ${GREEN}✓ lab-traffic.tsv${NC}"
+      elif [ -z "${LAB_TRAFFIC_TSV_HASH:-}" ]; then
+        # No stored hash baseline (pre-hash config) — no evidence of customization; overwrite and seed hash
         mv "$tsv_tmp" "$tsv_dest"
         LAB_TRAFFIC_TSV_HASH="$remote_hash"
         echo -e "  ${GREEN}✓ lab-traffic.tsv${NC}"

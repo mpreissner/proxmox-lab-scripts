@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.2.4] - 2026-02-18
+
+### Fixed
+- `cmd_update`: false-positive "local customizations detected" warning for `lab-traffic.tsv` when `LAB_TRAFFIC_TSV_HASH` was absent from `~/.proxmox-lab.conf`. Users upgrading from pre-hash-tracking versions (or from v3.2.2 where a too-narrow version gate in `_migrate_config` prevented hash seeding on 3.2.2→3.2.3 upgrades) hit this on their first update after receiving the TSV hash feature. Fix: added an explicit `elif [ -z "${LAB_TRAFFIC_TSV_HASH:-}" ]` branch — when no stored hash baseline exists there is no evidence of customization, so the upstream file is installed and the hash seeded. The customization warning (else branch) now only fires when a stored hash is present and differs from the local file, confirming a genuine local edit.
+- `_migrate_config`: removed `version_gt "3.2.2"` version gate from the `LAB_TRAFFIC_TSV_HASH` seeding step. The gate caused the migration to be skipped for any user already on v3.2.2 upgrading to v3.2.3 (3.2.2 is not `>` 3.2.2). Hash seeding now runs unconditionally whenever the hash is missing and the TSV file exists, within the existing `VERSION > SAVED_VERSION` outer guard.
+
 ## [3.2.3] - 2026-02-18
 
 ### Fixed
@@ -416,6 +422,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `browse_random()` invalid test operator (`-file` → `-f`) in `random-timing.sh`
 - `RUNNING_CONTAINERS` in `cmd_install_traffic_gen` now correctly filters to running containers only (`pct list` filtered by status field)
 
+[3.2.4]: https://github.com/mpreissner/proxmox-lab-scripts/compare/v3.2.3...v3.2.4
+[3.2.3]: https://github.com/mpreissner/proxmox-lab-scripts/compare/v3.2.2...v3.2.3
+[3.2.2]: https://github.com/mpreissner/proxmox-lab-scripts/compare/v3.2.1...v3.2.2
+[3.2.1]: https://github.com/mpreissner/proxmox-lab-scripts/compare/v3.1.3...v3.2.1
+[3.1.3]: https://github.com/mpreissner/proxmox-lab-scripts/compare/v3.1.2...v3.1.3
 [3.1.2]: https://github.com/mpreissner/proxmox-lab-scripts/compare/v3.0.5...v3.1.2
 [3.0.5]: https://github.com/mpreissner/proxmox-lab-scripts/compare/v3.0.4...v3.0.5
 [3.0.4]: https://github.com/mpreissner/proxmox-lab-scripts/compare/v3.0.3...v3.0.4
