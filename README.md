@@ -41,7 +41,7 @@ A single interactive menu covering the full lab lifecycle.
 6. **Windows Tools** — submenu for Windows VM management (see below)
 7. **Show Status** — view all containers with running state and traffic gen status at a glance
 8. **Update Container Packages** — run `apk update && apk upgrade` on all running lab containers in parallel
-9. **Update Lab Script** — check GitHub for a newer version, show changelog, prompt to confirm, then self-patch the script in place and exit. Also downloads updated `win-traffic.ps1`, `setup-scheduled-tasks.ps1`, and `lab-traffic.tsv` alongside the main script. On every interactive launch, the same check runs automatically before the menu appears.
+9. **Update Lab Script** — check GitHub for a newer version, show changelog, prompt to confirm, then self-patch the script in place and exit. Also downloads updated `setup-scheduled-tasks.ps1` and `lab-traffic.tsv` alongside the main script (`win-traffic.ps1` is generated from the TSV at push time and is not downloaded). On every interactive launch, the same check runs automatically before the menu appears.
 10. **Stop Containers** — stop all running lab-managed containers
 11. **Exit**
 
@@ -144,9 +144,9 @@ To verify in Windows: `certmgr.msc` → Trusted Root Certification Authorities �
 
 **Step 3 — Install / Update Traffic Generator Script**
 
-Pushes `win-traffic.ps1` to `C:\ProgramData\proxmox-lab\` on each selected VM. Compares `$SCRIPT_VERSION` between the local file and the remote copy — skips VMs that are already up to date.
+Generates `win-traffic.ps1` dynamically from `lab-traffic.tsv` and pushes it to `C:\ProgramData\proxmox-lab\` on each selected VM. The `$SCRIPT_VERSION` field in the generated file encodes both the script version and a short TSV content hash — skips VMs that are already up to date, and re-pushes automatically when the TSV changes even without a script version bump.
 
-The PS1 files (`win-traffic.ps1` and `setup-scheduled-tasks.ps1`) are downloaded automatically from GitHub the first time you enter the Windows Tools submenu, if they are not already present alongside `proxmox-lab.sh`. They are also updated automatically whenever you run `Update Lab Script` (option 9).
+`setup-scheduled-tasks.ps1` is downloaded automatically from GitHub the first time you enter the Windows Tools submenu if not already present alongside `proxmox-lab.sh`, and updated whenever you run `Update Lab Script` (option 9).
 
 **Step 4 — Configure Scheduled Tasks**
 
