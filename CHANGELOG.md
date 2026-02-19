@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.3.7] - 2026-02-19
+
+### Changed
+- **Perplexity and Mistral prompt submission disabled** — `genai_web_prompt()` in `genai.sh` and the platform dispatch in `dlp-genai-prompt.sh` now skip Perplexity and Mistral with a log message. Both providers return HTTP 200 with valid response bodies, but ZIA does not generate prompt capture events for anonymous curl sessions; root cause unconfirmed. ChatGPT remains active and confirmed working from containers. Re-enable by removing the `#` prefix from the relevant `genai_provider` rows in `lab-traffic.tsv`.
+- `lab-traffic.tsv`: `genai_provider` rows for Mistral (`devops`, `developer`) and Perplexity (`sales`, `executive`) commented out.
+- `dlp-genai-prompt.sh`: `PLATFORMS` array reduced to `("chatgpt")` only.
+
 ## [3.3.1] - 2026-02-18
 
 ### Added

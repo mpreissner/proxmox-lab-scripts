@@ -13,7 +13,7 @@ YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 CYAN='\033[0;36m'
 NC='\033[0m'
-VERSION="3.3.1"
+VERSION="3.3.7"
 
 CONFIG_FILE="${HOME}/.proxmox-lab.conf"
 if [ -f "$CONFIG_FILE" ]; then
@@ -2296,8 +2296,8 @@ PROMPTS=(
 )
 PROMPT="${PROMPTS[$((RANDOM % ${#PROMPTS[@]}))]}"
 
-PLATFORMS=("chatgpt" "perplexity" "mistral")
-PLATFORM="${PLATFORMS[$((RANDOM % 3))]}"
+PLATFORMS=("chatgpt")
+PLATFORM="${PLATFORMS[0]}"
 
 u1=$(cat /proc/sys/kernel/random/uuid)
 u2=$(cat /proc/sys/kernel/random/uuid)
@@ -2320,27 +2320,12 @@ case "$PLATFORM" in
       > /dev/null 2>&1 || true
     ;;
   perplexity)
-    rid=$(cat /proc/sys/kernel/random/uuid)
-    curl -s -m 20 \
-      -X POST "https://www.perplexity.ai/rest/sse/perplexity_ask" \
-      -H "Content-Type: application/json" \
-      -H "Accept: text/event-stream" \
-      -H "X-Perplexity-Request-Reason: perplexity-query-state-provider" \
-      -H "X-Request-Id: ${rid}" \
-      -H "User-Agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36" \
-      -d "{\"params\":{\"dsl_query\":\"${jp}\",\"query_str\":\"${jp}\",\"language\":\"en-US\",\"timezone\":\"America/New_York\",\"search_focus\":\"internet\",\"sources\":[\"web\"],\"mode\":\"copilot\",\"model_preference\":\"turbo\",\"is_related_query\":false,\"frontend_uuid\":\"${u1}\"}}" \
-      > /dev/null 2>&1 || true
+    # Disabled — prompt submission not generating expected ZIA events.
+    echo "[$(date)] DLP/genai: perplexity skipped"
     ;;
   mistral)
-    curl -s -m 20 \
-      -X POST "https://chat.mistral.ai/api/trpc/message.newChat?batch=1" \
-      -H "Content-Type: application/json" \
-      -H "Accept: application/jsonl" \
-      -H "Trpc-Accept: application/jsonl" \
-      -H "X-Trpc-Source: nextjs-react" \
-      -H "User-Agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36" \
-      -d "{\"0\":{\"json\":{\"content\":[{\"type\":\"text\",\"text\":\"${jp}\"}],\"features\":[\"beta-websearch\"],\"incognito\":false}}}" \
-      > /dev/null 2>&1 || true
+    # Disabled — prompt submission not generating expected ZIA events.
+    echo "[$(date)] DLP/genai: mistral skipped"
     ;;
 esac
 EOF
@@ -2543,30 +2528,12 @@ genai_web_prompt() {
         > /dev/null 2>&1 || true
       ;;
     perplexity)
-      # POST to perplexity.ai web app SSE endpoint. No real auth required.
-      local rid
-      rid=$(cat /proc/sys/kernel/random/uuid)
-      curl -s -m 20 \
-        -X POST "https://www.perplexity.ai/rest/sse/perplexity_ask" \
-        -H "Content-Type: application/json" \
-        -H "Accept: text/event-stream" \
-        -H "X-Perplexity-Request-Reason: perplexity-query-state-provider" \
-        -H "X-Request-Id: ${rid}" \
-        -H "User-Agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36" \
-        -d "{\"params\":{\"dsl_query\":\"${jp}\",\"query_str\":\"${jp}\",\"language\":\"en-US\",\"timezone\":\"America/New_York\",\"search_focus\":\"internet\",\"sources\":[\"web\"],\"mode\":\"copilot\",\"model_preference\":\"turbo\",\"is_related_query\":false,\"frontend_uuid\":\"${u1}\"}}" \
-        > /dev/null 2>&1 || true
+      # Disabled — prompt submission not generating expected ZIA events.
+      echo "[$(date)] GenAI: perplexity skipped"
       ;;
     mistral)
-      # POST to Mistral chat web app tRPC endpoint. Anonymous sessions allowed.
-      curl -s -m 20 \
-        -X POST "https://chat.mistral.ai/api/trpc/message.newChat?batch=1" \
-        -H "Content-Type: application/json" \
-        -H "Accept: application/jsonl" \
-        -H "Trpc-Accept: application/jsonl" \
-        -H "X-Trpc-Source: nextjs-react" \
-        -H "User-Agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36" \
-        -d "{\"0\":{\"json\":{\"content\":[{\"type\":\"text\",\"text\":\"${jp}\"}],\"features\":[\"beta-websearch\"],\"incognito\":false}}}" \
-        > /dev/null 2>&1 || true
+      # Disabled — prompt submission not generating expected ZIA events.
+      echo "[$(date)] GenAI: mistral skipped"
       ;;
   esac
 }
@@ -4536,43 +4503,106 @@ function Invoke-ChatGPTPrompt {
 
 function Invoke-PerplexityPrompt {
     param([string]$Prompt, [string]$UserAgent)
-    $reqId      = [System.Guid]::NewGuid().ToString()
-    $frontendId = [System.Guid]::NewGuid().ToString()
-    $bodyObj    = @{
+    $reqId     = [System.Guid]::NewGuid().ToString()
+    $ctxId     = [System.Guid]::NewGuid().ToString()
+    $visitorId = [System.Guid]::NewGuid().ToString()
+    $sessionId = [System.Guid]::NewGuid().ToString()
+    # Payload matches real Chrome browser capture. No read_write_token/last_backend_uuid --
+    # those only appear in follow-up requests, not initial prompts.
+    $bodyObj   = @{
         params = @{
-            dsl_query        = $Prompt
-            query_str        = $Prompt
-            language         = 'en-US'
-            timezone         = 'America/New_York'
-            search_focus     = 'internet'
-            sources          = @('web')
-            mode             = 'copilot'
-            model_preference = 'turbo'
-            is_related_query = $false
-            frontend_uuid    = $frontendId
+            attachments                          = @()
+            language                             = 'en-US'
+            timezone                             = 'America/New_York'
+            search_focus                         = 'internet'
+            sources                              = @('web')
+            frontend_uuid                        = $reqId
+            frontend_context_uuid                = $ctxId
+            mode                                 = 'copilot'
+            model_preference                     = 'turbo'
+            is_related_query                     = $false
+            is_sponsored                         = $false
+            prompt_source                        = 'user'
+            query_source                         = 'home'
+            is_incognito                         = $false
+            local_search_enabled                 = $false
+            use_schematized_api                  = $true
+            send_back_text_in_streaming_api      = $false
+            supported_block_use_cases            = @('answer_modes','media_items','knowledge_cards','inline_entity_cards','place_widgets','finance_widgets','prediction_market_widgets','sports_widgets','flight_status_widgets','news_widgets','shopping_widgets','jobs_widgets','search_result_widgets','inline_images','inline_assets','placeholder_cards','diff_blocks','inline_knowledge_cards','entity_group_v2','refinement_filters','canvas_mode','maps_preview','answer_tabs','price_comparison_widgets','preserve_latex','generic_onboarding_widgets','in_context_suggestions','pending_followups','inline_claims')
+            client_coordinates                   = $null
+            mentions                             = @()
+            dsl_query                            = $Prompt
+            skip_search_enabled                  = $true
+            is_nav_suggestions_disabled          = $false
+            source                               = 'default'
+            always_search_override               = $false
+            override_no_search                   = $false
+            should_ask_for_mcp_tool_confirmation = $true
+            browser_agent_allow_once_from_toggle = $false
+            force_enable_browser_agent           = $false
+            supported_features                   = @('browser_agent_permission_banner_v1.1')
+            version                              = '2.18'
         }
+        query_str = $Prompt
     }
     $body = $bodyObj | ConvertTo-Json -Depth 5 -Compress
     Invoke-Traffic -Uri 'https://www.perplexity.ai/rest/sse/perplexity_ask' `
         -Method 'POST' -Body $body -ContentType 'application/json' -UserAgent $UserAgent `
-        -Headers @{ 'X-Perplexity-Request-Reason' = 'perplexity-query-state-provider'; 'X-Request-Id' = $reqId }
+        -Headers @{
+            'X-Perplexity-Request-Reason' = 'perplexity-query-state-provider'
+            'X-Request-Id'    = $reqId
+            'Accept-Language' = 'en-US,en;q=0.9'
+            'Origin'          = 'https://www.perplexity.ai'
+            'Referer'         = 'https://www.perplexity.ai/'
+            'Cookie'          = "pplx.visitor-id=$visitorId; pplx.session-id=$sessionId"
+        }
 }
 
 function Invoke-MistralPrompt {
     param([string]$Prompt, [string]$UserAgent)
+    $anonId  = [System.Guid]::NewGuid().ToString()
     $bodyObj = @{
         '0' = @{
             json = @{
-                content   = @(@{ type = 'text'; text = $Prompt })
-                features  = @('beta-websearch')
-                incognito = $false
+                content                = @(@{ type = 'text'; text = $Prompt })
+                agentId                = $null
+                agentsApiAgentId       = $null
+                files                  = @()
+                isSampleChatForAgentId = $null
+                model                  = $null
+                features               = @('beta-websearch')
+                integrations           = @()
+                canva                  = $null
+                action                 = $null
+                libraries              = @()
+                projectId              = $null
+                transcriptionsMetadata = $null
+                incognito              = $false
+            }
+            meta = @{
+                values = @{
+                    agentId                = @('undefined')
+                    agentsApiAgentId       = @('undefined')
+                    isSampleChatForAgentId = @('undefined')
+                    model                  = @('undefined')
+                    canva                  = @('undefined')
+                    action                 = @('undefined')
+                    projectId              = @('undefined')
+                    transcriptionsMetadata = @('undefined')
+                }
             }
         }
     }
-    $body = $bodyObj | ConvertTo-Json -Depth 6 -Compress
+    $body = $bodyObj | ConvertTo-Json -Depth 8 -Compress
     Invoke-Traffic -Uri 'https://chat.mistral.ai/api/trpc/message.newChat?batch=1' `
         -Method 'POST' -Body $body -ContentType 'application/json' -UserAgent $UserAgent `
-        -Headers @{ 'Trpc-Accept' = 'application/jsonl'; 'X-Trpc-Source' = 'nextjs-react' }
+        -Headers @{
+            'Trpc-Accept'   = 'application/jsonl'
+            'X-Trpc-Source' = 'nextjs-react'
+            'Origin'        = 'https://chat.mistral.ai'
+            'Referer'       = 'https://chat.mistral.ai/chat'
+            'Cookie'        = "anonymousUser=$anonId"
+        }
 }
 
 function Invoke-GenAIWebPrompt {

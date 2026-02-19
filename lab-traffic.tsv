@@ -61,7 +61,7 @@ url	devops	api.github.com	yes
 url	devops	hub.docker.com	yes
 
 genai_provider	devops	chatgpt	yes
-genai_provider	devops	mistral	yes
+#genai_provider	devops	mistral	yes
 
 genai_prompt	devops	What are the key differences between blue-green and canary deployment strategies?	yes
 genai_prompt	devops	What metrics should I monitor to assess the health of a Kubernetes cluster in production?	yes
@@ -119,7 +119,7 @@ url	sales	zoom.us	yes
 url	sales	hubspot.com	yes
 
 genai_provider	sales	chatgpt	yes
-genai_provider	sales	perplexity	yes
+#genai_provider	sales	perplexity	yes
 
 genai_prompt	sales	Write a short cold outreach email introducing a cloud security platform to a CISO	yes
 genai_prompt	sales	What are the most common objections when selling SaaS to mid-market companies and how should I handle them?	yes
@@ -142,7 +142,7 @@ url	developer	console.aws.amazon.com	yes
 url	developer	hub.docker.com	yes
 
 genai_provider	developer	chatgpt	yes
-genai_provider	developer	mistral	yes
+#genai_provider	developer	mistral	yes
 
 genai_prompt	developer	What is the difference between a process and a thread in modern operating systems?	yes
 genai_prompt	developer	Explain the CAP theorem and when I should prioritize consistency over availability	yes
@@ -179,7 +179,7 @@ url	executive	apple.com	yes
 url	executive	salesforce.com	yes
 
 genai_provider	executive	chatgpt	yes
-genai_provider	executive	perplexity	yes
+#genai_provider	executive	perplexity	yes
 
 genai_prompt	executive	Summarize the key strategic implications of generative AI adoption for enterprise IT organizations	yes
 genai_prompt	executive	What questions should a CEO ask their CISO during a quarterly security briefing?	yes
