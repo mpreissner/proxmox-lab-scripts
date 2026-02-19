@@ -22,7 +22,7 @@ Provides a complete workflow for building a multi-container lab environment that
 - **Creates Alpine LXC templates** with pre-configured utilities
 - **Deploys Data Center and Branch network containers** with appropriate configurations, distributed across multiple Proxmox cluster nodes with auto-balanced or manual placement; supports linked clones (shared base disk, faster deploy) or full clones depending on storage type and topology
 - **Generates realistic traffic patterns** driven by `lab-traffic.tsv` — a tab-separated data file that defines URLs, GenAI providers, prompts, and security test assignments per profile. Profile scripts are generated dynamically at install time from this file.
-- **Simulates GenAI usage** by POSTing role-appropriate prompts to real web app endpoints (ChatGPT, Perplexity, Mistral Chat) — generating prompt capture events visible in Zscaler ZIA logs
+- **Simulates GenAI usage** by POSTing role-appropriate prompts to ChatGPT's web app endpoint — generating prompt capture events visible in Zscaler ZIA logs
 - **Configures security tests** independently of normal traffic — DLP (network, GenAI prompt/file/image OCR), AV/malware, policy violations, UEBA anomalies
 - **Manages Windows VMs** via a dedicated submenu: bulk-tags VMs for discovery, installs TLS inspection certificates (skip-if-current), pushes and version-checks traffic scripts, and configures scheduled tasks with profile selection
 
@@ -227,12 +227,12 @@ CTID ranges and VLAN IDs have no built-in defaults — they are entered at deplo
 | **webapp** | Stripe API, CDN services, OCSP | Stripe-Node, WebServer, OpenSSL, aws-cli | — |
 | **email** | Office 365, Gmail, SpamHaus, ClamAV | Exchange Server, Postfix, SpamAssassin, ClamAV | — |
 | **monitoring** | Ubuntu repos, Datadog, New Relic, Docker Hub, GitHub | Debian APT, Datadog Agent, NewRelic, Docker, GitHub Actions | — |
-| **devops** | npm, PyPI, GitHub, Docker Hub | npm, pip, git, GitHub Actions, Docker | ChatGPT, Mistral |
+| **devops** | npm, PyPI, GitHub, Docker Hub | npm, pip, git, GitHub Actions, Docker | ChatGPT |
 | **database** | AWS RDS, Azure SQL, S3 | aws-sdk-java, Boto3, azsdk-python | — |
 | **office-worker** | Microsoft 365, Slack, Google Docs, news, personal sites | Windows/Mac browser pool (Chrome, Edge, Firefox) | — |
-| **sales** | LinkedIn, Salesforce, Zoom, HubSpot, Expedia | Mac browser pool (Safari, Chrome) | ChatGPT, Perplexity |
-| **developer** | GitHub, StackOverflow, npm, PyPI, AWS Console | Mac/Linux browser pool (Chrome, Firefox) | ChatGPT, Mistral |
-| **executive** | WSJ, Bloomberg, FT, Reuters, Office 365, travel, Zoom | Mac Safari/Chrome pool | ChatGPT, Perplexity |
+| **sales** | LinkedIn, Salesforce, Zoom, HubSpot, Expedia | Mac browser pool (Safari, Chrome) | ChatGPT |
+| **developer** | GitHub, StackOverflow, npm, PyPI, AWS Console | Mac/Linux browser pool (Chrome, Firefox) | ChatGPT |
+| **executive** | WSJ, Bloomberg, FT, Reuters, Office 365, travel, Zoom | Mac Safari/Chrome pool | ChatGPT |
 
 Server profiles emit role-appropriate SDK and tool user agents matching the software that would realistically generate each request. User profiles pick from a persona-specific browser UA pool once per run and use it consistently throughout, so all requests within a session appear to come from the same device.
 
@@ -240,15 +240,9 @@ Server profiles emit role-appropriate SDK and tool user agents matching the soft
 
 GenAI-capable profiles (devops, developer, sales, executive) generate two types of GenAI activity:
 
-**Browsing** — periodic GET requests to GenAI platform homepages (chatgpt.com, perplexity.ai, chat.mistral.ai, poe.com), simulating a user navigating to an AI tool.
+**Browsing** — periodic GET requests to GenAI platform homepages, simulating a user navigating to an AI tool.
 
-**Prompt submission** — POST requests to real web app endpoints with role-appropriate business prompts embedded in the request body:
-
-| Provider | Endpoint | Profiles |
-|----------|----------|---------|
-| ChatGPT | `chatgpt.com/backend-api/f/conversation` | devops, developer, sales, executive |
-| Perplexity | `perplexity.ai/rest/sse/perplexity_ask` | sales, executive |
-| Mistral Chat | `chat.mistral.ai/api/trpc/message.newChat` | devops, developer |
+**Prompt submission** — POST requests to ChatGPT's web app endpoint (`chatgpt.com/backend-api/f/conversation`) with role-appropriate business prompts embedded in the request body across all four GenAI-capable profiles (devops, developer, sales, executive).
 
 The server returns 401/403 (no valid session token). Zscaler inspects the outbound request body before the response arrives, so **prompt capture events fire in ZIA logs regardless of the server response**. The traffic appears as a real user interacting with a GenAI service.
 
