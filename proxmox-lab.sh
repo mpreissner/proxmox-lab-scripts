@@ -13,7 +13,7 @@ YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 CYAN='\033[0;36m'
 NC='\033[0m'
-VERSION="3.3.7"
+VERSION="3.4.0"
 
 CONFIG_FILE="${HOME}/.proxmox-lab.conf"
 if [ -f "$CONFIG_FILE" ]; then
@@ -863,6 +863,270 @@ print(' '.join(pools))
 }
 
 # ============================================================
+# Helpers: Workload Selection UI
+# ============================================================
+
+# Map a container hostname to its traffic profile.
+# Supports group-numbered prefixes (hq1-, hq2-, branch1-, etc.)
+_profile_from_hostname() {
+  local hn="$1"
+  case "$hn" in
+    hq[0-9]*-fileserver*)  echo "fileserver" ;;
+    hq[0-9]*-webapp*)      echo "webapp" ;;
+    hq[0-9]*-email*)       echo "email" ;;
+    hq[0-9]*-monitoring*)  echo "monitoring" ;;
+    hq[0-9]*-devops*)      echo "devops" ;;
+    hq[0-9]*-database*)    echo "database" ;;
+    branch[0-9]*-worker*)  echo "office-worker" ;;
+    branch[0-9]*-sales*)   echo "sales" ;;
+    branch[0-9]*-dev*)     echo "developer" ;;
+    branch[0-9]*-exec*)    echo "executive" ;;
+  esac
+}
+
+# Interactive checkbox menu (arrow-key + space + enter).
+# No tput dependency — uses ANSI escape sequences only.
+#
+# Args:
+#   title      - section header shown above items
+#   items_var  - name of indexed array variable holding item labels
+#   descs_var  - name of indexed array variable holding descriptions (parallel)
+#   out_var    - name of output indexed array variable (selected item labels)
+#   min_select - minimum required selections (default: 1)
+_checkbox_menu() {
+  local title="$1"
+  local items_var="$2"
+  local descs_var="$3"
+  local out_var="$4"
+  local min_select="${5:-1}"
+
+  local -n _cbm_items="$items_var"
+  local -n _cbm_descs="$descs_var"
+
+  local _cbm_n=${#_cbm_items[@]}
+  local _cbm_selected=()
+  local _cbm_i
+  for (( _cbm_i=0; _cbm_i<_cbm_n; _cbm_i++ )); do
+    _cbm_selected+=( 1 )
+  done
+
+  local _cbm_cursor=0
+  local _cbm_warning=""
+  # Rendered lines: blank + title + blank + N items + blank + count + warning = N+6
+  local _cbm_nlines=$(( _cbm_n + 6 ))
+
+  local _cbm_saved_stty
+  _cbm_saved_stty=$(stty -g 2>/dev/null)
+  trap 'stty "$_cbm_saved_stty" 2>/dev/null' EXIT INT TERM
+  stty raw -echo 2>/dev/null
+
+  _cbm_render() {
+    local _c=0 _i _chk _nm _ds
+    for (( _i=0; _i<_cbm_n; _i++ )); do
+      [ "${_cbm_selected[_i]}" -eq 1 ] && _c=$(( _c + 1 ))
+    done
+    printf '\r\n'
+    printf '  \033[0;36m%s\033[0m — \xe2\x86\x91/\xe2\x86\x93 navigate, [Space] toggle, [Enter] confirm\r\n' "$title"
+    printf '\r\n'
+    for (( _i=0; _i<_cbm_n; _i++ )); do
+      _chk=" "; [ "${_cbm_selected[_i]}" -eq 1 ] && _chk="x"
+      _nm="${_cbm_items[_i]}"
+      _ds="${_cbm_descs[_i]}"
+      if [ "$_i" -eq "$_cbm_cursor" ]; then
+        printf '\033[0;36m  \xe2\x96\xba [%s] %-16s  %s\033[0m\r\n' "$_chk" "$_nm" "$_ds"
+      else
+        printf '    [%s] %-16s  %s\r\n' "$_chk" "$_nm" "$_ds"
+      fi
+    done
+    printf '\r\n'
+    printf '  %d of %d selected  (minimum: %d)\r\n' "$_c" "$_cbm_n" "$min_select"
+    if [ -n "$_cbm_warning" ]; then
+      printf '  \033[0;31m%s\033[0m\r\n' "$_cbm_warning"
+    else
+      printf '\r\n'
+    fi
+  }
+
+  _cbm_render
+  while true; do
+    local _key _e1 _e2
+    IFS= read -r -d '' -n1 _key 2>/dev/null || _key=''
+    if [[ "$_key" == $'\033' ]]; then
+      IFS= read -r -d '' -n1 -t 0.1 _e1 2>/dev/null || _e1=''
+      IFS= read -r -d '' -n1 -t 0.1 _e2 2>/dev/null || _e2=''
+      _key="${_key}${_e1}${_e2}"
+    fi
+
+    case "$_key" in
+      $'\033[A')
+        [ "$_cbm_cursor" -gt 0 ] && _cbm_cursor=$(( _cbm_cursor - 1 ))
+        _cbm_warning=""
+        ;;
+      $'\033[B')
+        [ "$_cbm_cursor" -lt $(( _cbm_n - 1 )) ] && _cbm_cursor=$(( _cbm_cursor + 1 ))
+        _cbm_warning=""
+        ;;
+      ' ')
+        if [ "${_cbm_selected[$_cbm_cursor]}" -eq 1 ]; then
+          _cbm_selected[$_cbm_cursor]=0
+        else
+          _cbm_selected[$_cbm_cursor]=1
+        fi
+        _cbm_warning=""
+        ;;
+      $'\r'|$'\n')
+        local _c=0 _i
+        for (( _i=0; _i<_cbm_n; _i++ )); do
+          [ "${_cbm_selected[_i]}" -eq 1 ] && _c=$(( _c + 1 ))
+        done
+        if [ "$_c" -lt "$min_select" ]; then
+          _cbm_warning="Please select at least ${min_select} item(s)"
+        else
+          stty "$_cbm_saved_stty" 2>/dev/null
+          trap - EXIT INT TERM
+          printf '\r\n'
+          break
+        fi
+        ;;
+      $'\003')
+        stty "$_cbm_saved_stty" 2>/dev/null
+        trap - EXIT INT TERM
+        printf '\r\n'
+        return 1
+        ;;
+    esac
+
+    for (( _cbm_i=0; _cbm_i<_cbm_nlines; _cbm_i++ )); do
+      printf '\033[1A\033[2K'
+    done
+    printf '\r'
+    _cbm_render
+  done
+
+  eval "${out_var}=()"
+  for (( _cbm_i=0; _cbm_i<_cbm_n; _cbm_i++ )); do
+    if [ "${_cbm_selected[$_cbm_i]}" -eq 1 ]; then
+      eval "${out_var}+=( \"\${_cbm_items[$_cbm_i]}\" )"
+    fi
+  done
+}
+
+# Prompt for a quantity for each selected workload profile.
+# Validates positive integers; default is 2 for office-worker, 1 for all others.
+#
+# Args:
+#   title        - group label (e.g. "Data Center (HQ)")
+#   profiles_var - name of indexed array: selected profile names
+#   out_var      - name of associative array to populate: profile → qty
+#                  (must be declared as 'declare -A' by the caller before calling)
+_select_profile_quantities() {
+  local title="$1"
+  local profiles_var="$2"
+  local out_var="$3"
+
+  local -n _spq_profiles="$profiles_var"
+
+  echo ""
+  echo -e "  ${CYAN}Set quantities for ${title} workloads:${NC}"
+  echo ""
+
+  local profile default_qty _spq_input qty
+  for profile in "${_spq_profiles[@]}"; do
+    local desc="${PROFILE_DESC[$profile]:-}"
+    if [ "$profile" = "office-worker" ]; then
+      default_qty=2
+    else
+      default_qty=1
+    fi
+    while true; do
+      read_with_default "    $(printf '%-16s' "$profile") ${desc}" "$default_qty" "_spq_input"
+      qty="$_spq_input"
+      if [[ "$qty" =~ ^[1-9][0-9]*$ ]]; then
+        eval "${out_var}[\"\$profile\"]=\"\$qty\""
+        break
+      else
+        echo -e "    ${RED}Enter a positive integer (e.g. 1, 2, 3)${NC}"
+      fi
+    done
+  done
+}
+
+# Build DEPLOY_LIST entries for a given group from selected profiles + quantities.
+# Generates numbered hostnames (e.g. hq1-fileserver1, branch1-worker2).
+# Accesses globals: _hq_start/_hq_end or _br_start/_br_end, _claimed_ctids,
+#                   VLAN_HQ/VLAN_BRANCH, DEPLOY_LIST
+# Sets globals:     HQ_TOTAL or BRANCH_TOTAL (total containers for the group)
+#
+# Args:
+#   group        - "hq" or "branch"
+#   profiles_var - name of indexed array: selected profile names (ordered)
+#   qtys_var     - name of associative array: profile → qty
+_build_deploy_entries() {
+  local group="$1"
+  local profiles_var="$2"
+  local qtys_var="$3"
+
+  local -n _bde_profiles="$profiles_var"
+  local -n _bde_qtys="$qtys_var"
+
+  local total=0
+  local profile prefix slug mem qty j hostname ctid
+  local offset=0
+
+  for profile in "${_bde_profiles[@]}"; do
+    qty="${_bde_qtys[$profile]:-1}"
+
+    case "${group}/${profile}" in
+      hq/fileserver)        prefix="hq1-";     slug="fileserver" ;;
+      hq/webapp)            prefix="hq1-";     slug="webapp"     ;;
+      hq/email)             prefix="hq1-";     slug="email"      ;;
+      hq/monitoring)        prefix="hq1-";     slug="monitoring" ;;
+      hq/devops)            prefix="hq1-";     slug="devops"     ;;
+      hq/database)          prefix="hq1-";     slug="database"   ;;
+      branch/office-worker) prefix="branch1-"; slug="worker"     ;;
+      branch/sales)         prefix="branch1-"; slug="sales"      ;;
+      branch/developer)     prefix="branch1-"; slug="dev"        ;;
+      branch/executive)     prefix="branch1-"; slug="exec"       ;;
+      *)                    prefix="${group}1-"; slug="$profile"  ;;
+    esac
+
+    case "$profile" in
+      monitoring|devops|developer) mem=512 ;;
+      *) mem="${MEMORY:-256}" ;;
+    esac
+
+    for (( j=1; j<=qty; j++ )); do
+      hostname="${prefix}${slug}${j}"
+      if [ "$group" = "hq" ]; then
+        ctid=$(_next_free_ctid_in_range "$_hq_start" "$_hq_end" "$_claimed_ctids") || {
+          echo -e "${RED}Error: Range ${HQ_RANGE} has no room for all Data Center containers.${NC}"
+          return 1
+        }
+      else
+        ctid=$(_next_free_ctid_in_range "$_br_start" "$_br_end" "$_claimed_ctids") || {
+          echo -e "${RED}Error: Range ${BRANCH_RANGE} has no room for all Branch containers.${NC}"
+          return 1
+        }
+      fi
+      _claimed_ctids="$_claimed_ctids $ctid"
+      if [ "$group" = "hq" ]; then
+        DEPLOY_LIST+=("${ctid} ${hostname} ${VLAN_HQ} ${mem} hq ${offset}")
+      else
+        DEPLOY_LIST+=("${ctid} ${hostname} ${VLAN_BRANCH} ${mem} branch ${offset}")
+      fi
+      offset=$(( offset + 1 ))
+      total=$(( total + 1 ))
+    done
+  done
+
+  if [ "$group" = "hq" ]; then
+    HQ_TOTAL="$total"
+  else
+    BRANCH_TOTAL="$total"
+  fi
+}
+
+# ============================================================
 # MODULE: Deploy Containers
 # ============================================================
 
@@ -1035,14 +1299,63 @@ except: print('0')
     *) DEPLOY_HQ=true; DEPLOY_BRANCH=true ;;
   esac
 
-  # 6. Distribution Mode (only when multiple nodes selected)
+  # 6. Workload Selection
+  local HQ_PROFILE_NAMES=("fileserver" "webapp" "email" "monitoring" "devops" "database")
+  local HQ_PROFILE_DESCS=(
+    "${PROFILE_DESC[fileserver]}"
+    "${PROFILE_DESC[webapp]}"
+    "${PROFILE_DESC[email]}"
+    "${PROFILE_DESC[monitoring]}"
+    "${PROFILE_DESC[devops]}"
+    "${PROFILE_DESC[database]}"
+  )
+  local BRANCH_PROFILE_NAMES=("office-worker" "sales" "developer" "executive")
+  local BRANCH_PROFILE_DESCS=(
+    "${PROFILE_DESC[office-worker]}"
+    "${PROFILE_DESC[sales]}"
+    "${PROFILE_DESC[developer]}"
+    "${PROFILE_DESC[executive]}"
+  )
+
+  HQ_TOTAL=0
+  BRANCH_TOTAL=0
+  local HQ_SELECTED=()
+  local BRANCH_SELECTED=()
+
+  if $DEPLOY_HQ; then
+    echo ""
+    echo -e "${BLUE}6. Data Center (HQ) Workload Selection${NC}"
+    _checkbox_menu "Select Data Center (HQ) workloads" \
+      HQ_PROFILE_NAMES HQ_PROFILE_DESCS HQ_SELECTED
+    declare -A HQ_QTYS=()
+    _select_profile_quantities "Data Center (HQ)" HQ_SELECTED HQ_QTYS
+    local _p
+    for _p in "${HQ_SELECTED[@]}"; do
+      HQ_TOTAL=$(( HQ_TOTAL + ${HQ_QTYS[$_p]:-1} ))
+    done
+  fi
+
+  if $DEPLOY_BRANCH; then
+    echo ""
+    echo -e "${BLUE}6. Branch (UserNet) Workload Selection${NC}"
+    _checkbox_menu "Select Branch (UserNet) workloads" \
+      BRANCH_PROFILE_NAMES BRANCH_PROFILE_DESCS BRANCH_SELECTED
+    declare -A BRANCH_QTYS=()
+    _select_profile_quantities "Branch (UserNet)" BRANCH_SELECTED BRANCH_QTYS
+    local _p
+    for _p in "${BRANCH_SELECTED[@]}"; do
+      BRANCH_TOTAL=$(( BRANCH_TOTAL + ${BRANCH_QTYS[$_p]:-1} ))
+    done
+  fi
+
+  # 7. Distribution Mode (only when multiple nodes selected)
   DIST_MODE="auto"
   declare -A MANUAL_NODE_HQ=()
   declare -A MANUAL_NODE_BRANCH=()
 
   if [ ${#SELECTED_NODES[@]} -gt 1 ]; then
     echo ""
-    echo -e "${BLUE}6. Distribution${NC}"
+    echo -e "${BLUE}7. Distribution${NC}"
     echo "  1) Auto-balanced by free RAM (recommended)"
     echo "  2) Manual — assign each group to a specific node"
     read -p "  Select [1-2] (default: 1): " dist_choice
@@ -1053,15 +1366,15 @@ except: print('0')
         if $DEPLOY_HQ; then
           read -p "  Data Center containers → node: " hq_node
           hq_node="${hq_node:-${SELECTED_NODES[0]}}"
-          for i in 0 1 2 3 4 5; do
-            MANUAL_NODE_HQ[$i]="$hq_node"
+          for (( _mi=0; _mi<HQ_TOTAL; _mi++ )); do
+            MANUAL_NODE_HQ[$_mi]="$hq_node"
           done
         fi
         if $DEPLOY_BRANCH; then
           read -p "  Branch containers → node: " br_node
           br_node="${br_node:-${SELECTED_NODES[0]}}"
-          for i in 0 1 2 3 4; do
-            MANUAL_NODE_BRANCH[$i]="$br_node"
+          for (( _mi=0; _mi<BRANCH_TOTAL; _mi++ )); do
+            MANUAL_NODE_BRANCH[$_mi]="$br_node"
           done
         fi
         ;;
@@ -1071,53 +1384,21 @@ except: print('0')
     esac
   fi
 
-  # 7. HQ Config
+  # 8. HQ Config
   if $DEPLOY_HQ; then
     echo ""
-    echo -e "${BLUE}7. Data Center Configuration${NC}"
-    read_ctid_range "Data Center CTID range" 6 "HQ_RANGE"
+    echo -e "${BLUE}8. Data Center Configuration${NC}"
+    read_ctid_range "Data Center CTID range" "$HQ_TOTAL" "HQ_RANGE"
     read_with_default "Data Center VLAN tag" "${VLAN_HQ:-}" "VLAN_HQ"
-
-    echo -e "${CYAN}Data Center containers (assigned within ${HQ_RANGE}, skipping any in use):${NC}"
-    echo "  hq-fileserver (256 MB)"
-    echo "  hq-webapp (256 MB)"
-    echo "  hq-email (256 MB)"
-    echo "  hq-monitoring (512 MB)"
-    echo "  hq-devops (512 MB)"
-    echo "  hq-database (256 MB)"
   fi
 
-  # 8. Branch Config
+  # 9. Branch Config
   if $DEPLOY_BRANCH; then
     echo ""
-    echo -e "${BLUE}8. Branch UserNet Configuration${NC}"
-    read_ctid_range "Branch CTID range" 5 "BRANCH_RANGE"
+    echo -e "${BLUE}9. Branch UserNet Configuration${NC}"
+    read_ctid_range "Branch CTID range" "$BRANCH_TOTAL" "BRANCH_RANGE"
     read_with_default "Branch VLAN tag" "${VLAN_BRANCH:-}" "VLAN_BRANCH"
-
-    echo -e "${CYAN}Branch containers (assigned within ${BRANCH_RANGE}, skipping any in use):${NC}"
-    echo "  branch-worker1 (256 MB)"
-    echo "  branch-worker2 (256 MB)"
-    echo "  branch-sales (256 MB)"
-    echo "  branch-dev (512 MB)"
-    echo "  branch-exec (256 MB)"
   fi
-
-  declare -A HQ_CONTAINERS=(
-    [0]="hq-fileserver"
-    [1]="hq-webapp"
-    [2]="hq-email"
-    [3]="hq-monitoring"
-    [4]="hq-devops"
-    [5]="hq-database"
-  )
-
-  declare -A BRANCH_CONTAINERS=(
-    [0]="branch-worker1"
-    [1]="branch-worker2"
-    [2]="branch-sales"
-    [3]="branch-dev"
-    [4]="branch-exec"
-  )
 
   # Scan existing cluster CTs so we can assign only free CTIDs.
   echo "Scanning for existing containers..."
@@ -1127,35 +1408,17 @@ except: print('0')
   IFS='-' read -r _hq_start _hq_end <<< "${HQ_RANGE:-}"
   IFS='-' read -r _br_start _br_end <<< "${BRANCH_RANGE:-}"
 
-  # Build full container list with CTID, hostname, profile, VLAN, memory.
+  # Build full container list with CTID, hostname, VLAN, memory.
   # CTIDs are assigned in order within the configured range, skipping any
-  # already in use. Errors out if the range cannot fit the full stack.
+  # already in use. Errors out if the range cannot fit the selected workloads.
   # Format: CTID hostname vlan mem group offset
   declare -a DEPLOY_LIST=()
   _claimed_ctids=""
   if $DEPLOY_HQ; then
-    for OFFSET in 0 1 2 3 4 5; do
-      CTID=$(_next_free_ctid_in_range "$_hq_start" "$_hq_end" "$_claimed_ctids") || {
-        echo -e "${RED}Error: Range ${HQ_RANGE} has no room for all 6 Data Center containers.${NC}"
-        return 1
-      }
-      _claimed_ctids="$_claimed_ctids $CTID"
-      HOSTNAME="${HQ_CONTAINERS[$OFFSET]}"
-      if [[ "$HOSTNAME" =~ (monitoring|devops) ]]; then MEM=512; else MEM=256; fi
-      DEPLOY_LIST+=("${CTID} ${HOSTNAME} ${VLAN_HQ} ${MEM} hq ${OFFSET}")
-    done
+    _build_deploy_entries "hq" HQ_SELECTED HQ_QTYS
   fi
   if $DEPLOY_BRANCH; then
-    for OFFSET in 0 1 2 3 4; do
-      CTID=$(_next_free_ctid_in_range "$_br_start" "$_br_end" "$_claimed_ctids") || {
-        echo -e "${RED}Error: Range ${BRANCH_RANGE} has no room for all 5 Branch containers.${NC}"
-        return 1
-      }
-      _claimed_ctids="$_claimed_ctids $CTID"
-      HOSTNAME="${BRANCH_CONTAINERS[$OFFSET]}"
-      if [[ "$HOSTNAME" == "branch-dev" ]]; then MEM=512; else MEM=256; fi
-      DEPLOY_LIST+=("${CTID} ${HOSTNAME} ${VLAN_BRANCH} ${MEM} branch ${OFFSET}")
-    done
+    _build_deploy_entries "branch" BRANCH_SELECTED BRANCH_QTYS
   fi
 
   # Assign each container to a node
@@ -1358,13 +1621,7 @@ except: print('0 0')" 2>/dev/null || echo "0 0")"
   for entry in "${DEPLOY_LIST[@]}"; do
     read -r ctid hostname vlan mem group offset <<< "$entry"
     target="${CTID_NODES[$ctid]}"
-    if [ "$group" = "hq" ]; then
-      profiles=("fileserver" "webapp" "email" "monitoring" "devops" "database")
-      profile="${profiles[$offset]}"
-    else
-      profiles=("office-worker" "office-worker" "sales" "developer" "executive")
-      profile="${profiles[$offset]}"
-    fi
+    profile=$(_profile_from_hostname "$hostname")
     printf "  %-8s %-20s %-14s %-10s %-6s\n" \
       "$ctid" "$hostname" "$profile" "$target" "${mem} MB"
   done
@@ -1388,7 +1645,7 @@ except: print('0 0')" 2>/dev/null || echo "0 0")"
     echo "  VLAN Tag:    ${VLAN_HQ}"
     echo "  Range:       ${HQ_RANGE}"
     echo "  CTIDs:       ${_hq_ctids# }"
-    echo "  Containers:  6"
+    echo "  Containers:  ${HQ_TOTAL}"
   fi
 
   if $DEPLOY_BRANCH; then
@@ -1402,7 +1659,7 @@ except: print('0 0')" 2>/dev/null || echo "0 0")"
     echo "  VLAN Tag:    ${VLAN_BRANCH}"
     echo "  Range:       ${BRANCH_RANGE}"
     echo "  CTIDs:       ${_br_ctids# }"
-    echo "  Containers:  5"
+    echo "  Containers:  ${BRANCH_TOTAL}"
   fi
 
   echo ""
@@ -2043,47 +2300,18 @@ declare -A PROFILE_DESC=(
   ["executive"]="Office 365, WSJ, Bloomberg, Zoom, GenAI tools"
 )
 
-# DEFAULT_PROFILES is built dynamically from HQ_RANGE/BRANCH_RANGE after
-# _load_ct_data runs. Lab-managed containers within each range are sorted by
-# CTID and mapped positionally to the profile order, so the profile is always
-# the source of truth regardless of which specific CTIDs were assigned.
+# DEFAULT_PROFILES is built dynamically from _CT_HOSTNAME after _load_ct_data runs.
+# Each lab-managed container's profile is derived from its hostname pattern, so
+# the mapping is correct regardless of which CTIDs were assigned or which profiles
+# were selected at deploy time. Also tolerates group-numbered prefixes (hq1-, hq2-).
 declare -A DEFAULT_PROFILES=()
 _build_default_profiles() {
-  local hq_profiles=(fileserver webapp email monitoring devops database)
-  # Branch: minimum two office-worker workloads, followed by remaining profiles
-  local br_ow_min=2
-  local br_other_profiles=(sales developer executive)
-  local idx ctid profile
-
-  if [ -n "${HQ_RANGE:-}" ]; then
-    IFS='-' read -r _hq_s _hq_e <<< "$HQ_RANGE"
-    idx=0
-    for ctid in $(seq $_hq_s $_hq_e); do
-      [ $idx -ge ${#hq_profiles[@]} ] && break
-      if [ -n "${_CT_NODE[$ctid]+x}" ] && [[ "${_CT_TAGS[$ctid]:-}" == *"lab-managed"* ]]; then
-        DEFAULT_PROFILES[$ctid]="${hq_profiles[$idx]}"
-        ((++idx))
-      fi
-    done
-  fi
-
-  if [ -n "${BRANCH_RANGE:-}" ]; then
-    IFS='-' read -r _br_s _br_e <<< "$BRANCH_RANGE"
-    local total_branch=$(( br_ow_min + ${#br_other_profiles[@]} ))
-    idx=0
-    for ctid in $(seq $_br_s $_br_e); do
-      [ $idx -ge $total_branch ] && break
-      if [ -n "${_CT_NODE[$ctid]+x}" ] && [[ "${_CT_TAGS[$ctid]:-}" == *"lab-managed"* ]]; then
-        if [ $idx -lt $br_ow_min ]; then
-          profile="office-worker"
-        else
-          profile="${br_other_profiles[$((idx - br_ow_min))]}"
-        fi
-        DEFAULT_PROFILES[$ctid]="$profile"
-        ((++idx))
-      fi
-    done
-  fi
+  local ctid profile
+  for ctid in "${!_CT_NODE[@]}"; do
+    [[ "${_CT_TAGS[$ctid]:-}" == *"lab-managed"* ]] || continue
+    profile=$(_profile_from_hostname "${_CT_HOSTNAME[$ctid]:-}")
+    [ -n "$profile" ] && DEFAULT_PROFILES[$ctid]="$profile"
+  done
 }
 
 # ============================================================
