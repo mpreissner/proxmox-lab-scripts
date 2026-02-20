@@ -2,6 +2,16 @@
 
 An interactive shell script for deploying and managing a Proxmox LXC container-based security testing lab. Automates the creation of a realistic multi-site enterprise network with simulated traffic patterns for testing security solutions like Zscaler, CASB, DLP, and UEBA systems.
 
+## What's New (v3.4.0)
+
+**Workload selection menu** — the Deploy step now shows an interactive checkbox menu for each deployment group (Data Center and Branch) after the scope choice. Select any subset of profiles rather than always deploying the full fixed stack. Each selected profile gets a quantity prompt so you can deploy multiple instances of the same workload (e.g., three `fileserver` containers, two `developer` containers). Containers are numbered sequentially: `hq1-fileserver1`, `hq1-fileserver2`, `branch1-worker1`, etc.
+
+CTID range minimum-count requirements and resource feasibility checks are now computed dynamically from the actual workload selections, rather than being hardcoded to 6 (HQ) and 5 (Branch).
+
+The `install-traffic` profile-to-container mapping is now hostname-based rather than positional, so it works correctly with any combination of profiles and quantities.
+
+---
+
 ## Lab Architecture
 
 **Important:** This lab was developed with a specific network topology in mind:
@@ -20,7 +30,7 @@ Provides a complete workflow for building a multi-container lab environment that
 ### What It Does
 
 - **Creates Alpine LXC templates** with pre-configured utilities
-- **Deploys Data Center and Branch network containers** with appropriate configurations, distributed across multiple Proxmox cluster nodes with auto-balanced or manual placement; supports linked clones (shared base disk, faster deploy) or full clones depending on storage type and topology
+- **Deploys Data Center and Branch network containers** with appropriate configurations — an interactive checkbox menu lets you select which profiles to deploy and how many of each; containers distribute across multiple Proxmox cluster nodes with auto-balanced or manual placement; supports linked clones (shared base disk, faster deploy) or full clones depending on storage type and topology
 - **Generates realistic traffic patterns** driven by `lab-traffic.tsv` — a tab-separated data file that defines URLs, GenAI providers, prompts, and security test assignments per profile. Profile scripts are generated dynamically at install time from this file.
 - **Simulates GenAI usage** by POSTing role-appropriate prompts to ChatGPT's web app endpoint — generating prompt capture events visible in Zscaler ZIA logs
 - **Configures security tests** independently of normal traffic — DLP (network, GenAI prompt/file/image OCR), AV/malware, policy violations, UEBA anomalies
@@ -99,7 +109,7 @@ Each step can also be run individually:
 
 ```bash
 ./proxmox-lab.sh create-template   # Step 1 — create Alpine template
-./proxmox-lab.sh deploy            # Step 2 — clone 11 containers
+./proxmox-lab.sh deploy            # Step 2 — select workloads and clone containers
 ./proxmox-lab.sh start             # Step 3 — start containers
 ./proxmox-lab.sh install-traffic   # Step 4 — install traffic profiles
 ```
@@ -189,10 +199,12 @@ pct exec 200 -- bash /opt/traffic-gen/security-tests/dlp-network.sh
 
 CTID ranges and VLAN IDs have no built-in defaults — they are entered at deploy time and saved to `~/.proxmox-lab.conf` for subsequent runs.
 
-| Network | Containers |
-|---------|------------|
-| Data Center | 6 servers (fileserver, webapp, email, monitoring, devops, database) |
-| BranchNet | 5 users (2× office-worker, sales, developer, executive) |
+| Network | Available profiles | Default qty |
+|---------|-------------------|-------------|
+| Data Center | fileserver, webapp, email, monitoring, devops, database | 1 each (user-selectable) |
+| BranchNet | office-worker, sales, developer, executive | 2 for office-worker, 1 for others (user-selectable) |
+
+Profiles and quantities are chosen interactively at deploy time via the workload selection menu. Containers are named `hq1-<profile><n>` and `branch1-<profile><n>` (e.g., `hq1-fileserver1`, `branch1-worker2`).
 
 ### Resource Allocation
 

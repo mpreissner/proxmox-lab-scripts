@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.4.0] - 2026-02-20
+
+### Added
+- **Workload selection menu** — `cmd_deploy_containers` now shows an interactive checkbox menu (arrow-key + space + enter) for each deployment group after the scope choice. Users can select any subset of HQ or Branch profiles rather than always deploying the full fixed stack.
+- **Per-profile quantity prompts** — after profile selection, users are prompted for a quantity per selected profile (default: 2 for `office-worker`, 1 for all others). Entering `3` for `fileserver` deploys `hq1-fileserver1`, `hq1-fileserver2`, `hq1-fileserver3`.
+- **`_checkbox_menu()`** — generic ANSI-based interactive checkbox UI with arrow-key navigation, space-to-toggle, enter-to-confirm, and a minimum-selection guard. No `tput` dependency.
+- **`_select_profile_quantities()`** — sequential `read_with_default` prompts per selected profile, with positive-integer validation.
+- **`_build_deploy_entries()`** — converts profile+quantity selections into `DEPLOY_LIST` entries with numbered hostnames (`hq1-fileserver1`, `branch1-worker2`, etc.) and sequential CTID assignment within the configured range.
+- **`_profile_from_hostname()`** — maps a container hostname to its traffic profile using glob patterns; supports group-numbered prefixes (`hq1-`, `hq2-`, `branch1-`, etc.).
+
+### Changed
+- `cmd_deploy_containers`: CTID range `min_count` arguments are now dynamic (`$HQ_TOTAL` / `$BRANCH_TOTAL`) rather than hardcoded 6 / 5.
+- `cmd_deploy_containers`: Deployment summary shows the actual container count for each group rather than hardcoded values.
+- `_build_default_profiles`: Switched from positional CTID-range iteration to hostname-based inference via `_profile_from_hostname`. Works correctly with any profile selection and quantity, and tolerates group-numbered hostnames from future multi-environment deployments.
+
 ## [3.3.7] - 2026-02-19
 
 ### Changed
