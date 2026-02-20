@@ -13,7 +13,7 @@ YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 CYAN='\033[0;36m'
 NC='\033[0m'
-VERSION="3.4.0"
+VERSION="3.4.1"
 
 CONFIG_FILE="${HOME}/.proxmox-lab.conf"
 if [ -f "$CONFIG_FILE" ]; then
@@ -2039,6 +2039,7 @@ cmd_start_containers() {
 
   SUCCESS_COUNT=0
   FAILED_COUNT=0
+  declare -a FAILED_CONTAINERS=()
 
   for CTID in "${TARGET_CONTAINERS[@]}"; do
     CT_NODE="${_CT_NODE[$CTID]:-$(get_local_node)}"
@@ -2049,6 +2050,7 @@ cmd_start_containers() {
     else
       printf "%-8s %-20s ${RED}%-12s${NC} %-10s\n" "$CTID" "$HOSTNAME" "Failed" "$CT_NODE"
       ((++FAILED_COUNT))
+      FAILED_CONTAINERS+=("$CTID ($HOSTNAME)")
     fi
   done
 
@@ -2056,6 +2058,15 @@ cmd_start_containers() {
   echo -e "${GREEN}Successfully started: ${SUCCESS_COUNT}${NC}"
   if [ $FAILED_COUNT -gt 0 ]; then
     echo -e "${RED}Failed to start: ${FAILED_COUNT}${NC}"
+    echo ""
+    echo -e "${RED}The following containers failed to start:${NC}"
+    for fc in "${FAILED_CONTAINERS[@]}"; do
+      echo -e "  ${RED}•${NC} $fc"
+    done
+    echo ""
+    echo -e "${YELLOW}Resolve these failures before running Install Traffic Generator.${NC}"
+    echo "  Manual start:     pct start <CTID>"
+    echo "  Diagnose:         pct exec <CTID> -- dmesg | tail"
   fi
 
   echo ""
@@ -3059,9 +3070,14 @@ _tsv_viewer() {
         done <<< "${_TSV_PROMPTS[$profile]:-}"
       fi
 
-      # Security tests (read directly from TSV to show enabled/disabled state)
+      # Security tests — show effective install state when available, otherwise TSV defaults
       echo ""
-      echo -e "  ${CYAN}Security Tests (toggle to enable/disable):${NC}"
+      local _eff_tests="${_VIEWER_EFFECTIVE_TESTS[$profile]:-}"
+      if [ ${#_VIEWER_EFFECTIVE_TESTS[@]} -gt 0 ]; then
+        echo -e "  ${CYAN}Security Tests (this install):${NC}"
+      else
+        echo -e "  ${CYAN}Security Tests (toggle to enable/disable):${NC}"
+      fi
       local test_names=()
       local test_states=()
       while IFS=$'\t' read -r type pf val en; do
@@ -3077,14 +3093,27 @@ _tsv_viewer() {
       else
         local tidx=1
         for tn in "${test_names[@]}"; do
-          local state="${test_states[$((tidx-1))]}"
-          if [ "$state" = "yes" ]; then
-            printf "    %2d) ${GREEN}[ON] ${NC} %s\n" "$tidx" "$tn"
+          if [ ${#_VIEWER_EFFECTIVE_TESTS[@]} -gt 0 ]; then
+            # Show what will actually be installed in this run
+            if [[ " ${_eff_tests} " == *" ${tn} "* ]]; then
+              printf "    %2d) ${GREEN}[INSTALL]${NC} %s\n" "$tidx" "$tn"
+            else
+              printf "    %2d) ${YELLOW}[skip]   ${NC} %s\n" "$tidx" "$tn"
+            fi
           else
-            printf "    %2d) ${YELLOW}[OFF]${NC} %s\n" "$tidx" "$tn"
+            local state="${test_states[$((tidx-1))]}"
+            if [ "$state" = "yes" ]; then
+              printf "    %2d) ${GREEN}[ON] ${NC} %s\n" "$tidx" "$tn"
+            else
+              printf "    %2d) ${YELLOW}[OFF]${NC} %s\n" "$tidx" "$tn"
+            fi
           fi
           ((tidx++))
         done
+        if [ ${#_VIEWER_EFFECTIVE_TESTS[@]} -gt 0 ]; then
+          echo ""
+          echo -e "  ${CYAN}Note:${NC} Toggle updates TSV defaults for future 'recommended defaults' installs."
+        fi
       fi
 
       echo ""
@@ -3426,6 +3455,21 @@ cmd_install_traffic_gen() {
       echo "    → Security tests: ${SECURITY_TESTS[$CTID]}"
     fi
   done
+
+  # Build effective test map so the viewer can show what will actually be installed
+  # rather than the TSV default enabled/disabled state.
+  declare -gA _VIEWER_EFFECTIVE_TESTS=()
+  if $ENABLE_SECURITY_TESTS; then
+    local _vctid _vpf _vt
+    for _vctid in "${!SECURITY_TESTS[@]}"; do
+      _vpf="${TARGET_PROFILES[$_vctid]:-}"
+      [ -z "$_vpf" ] && continue
+      for _vt in ${SECURITY_TESTS[$_vctid]}; do
+        [[ " ${_VIEWER_EFFECTIVE_TESTS[$_vpf]:-} " != *" $_vt "* ]] && \
+          _VIEWER_EFFECTIVE_TESTS[$_vpf]+=" $_vt"
+      done
+    done
+  fi
 
   echo ""
   echo -e "  ${CYAN}Tip: enter 'v' to review profile URLs, GenAI prompts, and enable or"

@@ -2,6 +2,14 @@
 
 An interactive shell script for deploying and managing a Proxmox LXC container-based security testing lab. Automates the creation of a realistic multi-site enterprise network with simulated traffic patterns for testing security solutions like Zscaler, CASB, DLP, and UEBA systems.
 
+## What's New (v3.4.1)
+
+**Start containers error reporting** — if any containers fail to start, they are now listed by name after the status table, with a clear recommendation to resolve failures before running Install Traffic Generator, and diagnostic hints (`pct start <CTID>`, `pct exec <CTID> -- dmesg | tail`).
+
+**Profile viewer shows effective install state** — when opened from the Install Traffic Generator confirm prompt, the profile viewer now shows `[INSTALL]`/`[skip]` labels reflecting the actual security tests selected for the current run (based on your mode 1–4 choice), rather than the TSV file's default `[ON]`/`[OFF]` state. Toggling a test still updates the TSV for future "recommended defaults" installs — the viewer displays a note explaining this.
+
+---
+
 ## What's New (v3.4.0)
 
 **Workload selection menu** — the Deploy step now shows an interactive checkbox menu for each deployment group (Data Center and Branch) after the scope choice. Select any subset of profiles rather than always deploying the full fixed stack. Each selected profile gets a quantity prompt so you can deploy multiple instances of the same workload (e.g., three `fileserver` containers, two `developer` containers). Containers are numbered sequentially: `hq1-fileserver1`, `hq1-fileserver2`, `branch1-worker1`, etc.
@@ -320,8 +328,8 @@ To customize traffic data, edit `lab-traffic.tsv` directly on the Proxmox host a
 
 At the "Proceed with installation?" prompt during `install-traffic`, enter `v` to open the profile viewer:
 
-- **Browse any profile** — see its URLs, GenAI providers, prompts, and security test on/off state
-- **Toggle security tests** — flip individual tests on or off; changes write back to `lab-traffic.tsv` immediately and are reflected in the upcoming install
+- **Browse any profile** — see its URLs, GenAI providers, prompts, and security test state. When opened during `install-traffic`, tests show as `[INSTALL]`/`[skip]` based on your mode selection rather than raw TSV defaults.
+- **Toggle security tests** — flip individual tests on or off; changes write back to `lab-traffic.tsv` immediately and affect future "recommended defaults" installs
 
 This is the recommended way to review and adjust security test posture before deploying to a new environment.
 

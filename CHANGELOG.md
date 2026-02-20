@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.4.1] - 2026-02-20
+
+### Fixed
+- **`cmd_start_containers` error reporting** — containers that fail to start are now listed by name after the status table, with a recommendation to resolve failures before running Install Traffic Generator and hints for `pct start` and `pct exec <CTID> -- dmesg | tail`.
+- **`_tsv_viewer` security test display** — when opened from the Install Traffic Generator confirm prompt, the viewer now shows `[INSTALL]`/`[skip]` state reflecting the actual tests selected for the current install run (mode 1–4 choice), rather than the TSV file's default `[ON]`/`[OFF]` state. Toggle still writes back to the TSV for future "recommended defaults" installs, with a note clarifying this.
+
 ## [3.4.0] - 2026-02-20
 
 ### Added
