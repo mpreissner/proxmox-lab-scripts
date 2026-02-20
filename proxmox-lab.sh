@@ -13,7 +13,7 @@ YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 CYAN='\033[0;36m'
 NC='\033[0m'
-VERSION="3.4.1"
+VERSION="3.4.2"
 
 CONFIG_FILE="${HOME}/.proxmox-lab.conf"
 if [ -f "$CONFIG_FILE" ]; then
@@ -2167,13 +2167,10 @@ cmd_stop_containers() {
       fi
       IFS='-' read -r _hq_start _hq_end <<< "$HQ_RANGE"
       echo "Checking Data Center containers (${HQ_RANGE})..."
-      for ctid in $(seq $_hq_start $_hq_end); do
-        status=$(_cluster_ct_running $ctid)
-        if [ "$status" = "running" ]; then
+      for ctid in "${ALL_RUNNING[@]}"; do
+        if [ "$ctid" -ge "$_hq_start" ] && [ "$ctid" -le "$_hq_end" ]; then
           TARGET_CONTAINERS+=($ctid)
-          echo "  CT ${ctid}: Will stop"
-        else
-          echo -e "  ${YELLOW}CT ${ctid}: Not running (skipped)${NC}"
+          echo "  CT ${ctid} (${_CT_HOSTNAME[$ctid]:-unknown}): Will stop"
         fi
       done
       ;;
@@ -2186,13 +2183,10 @@ cmd_stop_containers() {
       fi
       IFS='-' read -r _br_start _br_end <<< "$BRANCH_RANGE"
       echo "Checking Branch containers (${BRANCH_RANGE})..."
-      for ctid in $(seq $_br_start $_br_end); do
-        status=$(_cluster_ct_running $ctid)
-        if [ "$status" = "running" ]; then
+      for ctid in "${ALL_RUNNING[@]}"; do
+        if [ "$ctid" -ge "$_br_start" ] && [ "$ctid" -le "$_br_end" ]; then
           TARGET_CONTAINERS+=($ctid)
-          echo "  CT ${ctid}: Will stop"
-        else
-          echo -e "  ${YELLOW}CT ${ctid}: Not running (skipped)${NC}"
+          echo "  CT ${ctid} (${_CT_HOSTNAME[$ctid]:-unknown}): Will stop"
         fi
       done
       ;;
