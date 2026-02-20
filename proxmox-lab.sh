@@ -1868,15 +1868,10 @@ cmd_start_containers() {
       fi
       IFS='-' read -r _hq_start _hq_end <<< "$HQ_RANGE"
       echo "Checking Data Center containers (${HQ_RANGE})..."
-      for ctid in $(seq $_hq_start $_hq_end); do
-        status=$(_cluster_ct_status $ctid)
-        if [ "$status" = "stopped" ]; then
+      for ctid in "${STOPPED_CONTAINERS[@]}"; do
+        if [ "$ctid" -ge "$_hq_start" ] && [ "$ctid" -le "$_hq_end" ]; then
           TARGET_CONTAINERS+=($ctid)
-          echo "  CT ${ctid}: Will start"
-        elif [ "$status" = "running" ]; then
-          echo -e "  ${YELLOW}CT ${ctid}: Already running (skipped)${NC}"
-        else
-          echo -e "  ${RED}CT ${ctid}: Does not exist (skipped)${NC}"
+          echo "  CT ${ctid} (${_CT_HOSTNAME[$ctid]:-unknown}): Will start"
         fi
       done
       ;;
@@ -1889,15 +1884,10 @@ cmd_start_containers() {
       fi
       IFS='-' read -r _br_start _br_end <<< "$BRANCH_RANGE"
       echo "Checking Branch containers (${BRANCH_RANGE})..."
-      for ctid in $(seq $_br_start $_br_end); do
-        status=$(_cluster_ct_status $ctid)
-        if [ "$status" = "stopped" ]; then
+      for ctid in "${STOPPED_CONTAINERS[@]}"; do
+        if [ "$ctid" -ge "$_br_start" ] && [ "$ctid" -le "$_br_end" ]; then
           TARGET_CONTAINERS+=($ctid)
-          echo "  CT ${ctid}: Will start"
-        elif [ "$status" = "running" ]; then
-          echo -e "  ${YELLOW}CT ${ctid}: Already running (skipped)${NC}"
-        else
-          echo -e "  ${RED}CT ${ctid}: Does not exist (skipped)${NC}"
+          echo "  CT ${ctid} (${_CT_HOSTNAME[$ctid]:-unknown}): Will start"
         fi
       done
       ;;
