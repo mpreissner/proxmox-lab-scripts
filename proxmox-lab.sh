@@ -13,7 +13,7 @@ YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 CYAN='\033[0;36m'
 NC='\033[0m'
-VERSION="3.4.2"
+VERSION="3.5.0"
 
 CONFIG_FILE="${HOME}/.proxmox-lab.conf"
 if [ -f "$CONFIG_FILE" ]; then
@@ -4080,36 +4080,44 @@ cmd_system_cleanup() {
     [ -n "$TEMPLATE_NODE" ] && TEMPLATE_CTID="$TEMPLATE_ID"
   fi
 
-  # Alpine images — check every cluster node via pveam
-  local _img_store="${IMAGE_STORAGE:-local}"
+  # Alpine images — scan all vztmpl-capable storage pools across the cluster.
+  # IMAGE_STORAGE config reflects where new downloads go, but the image may have
+  # been placed in a different pool when create-template ran. Scanning all pools
+  # avoids false "nothing to clean up" results from a config mismatch.
   declare -a ALPINE_IMAGE_NODES=() ALPINE_IMAGE_PATHS=()
   local _nodes _node
   _nodes=$(get_cluster_nodes 2>/dev/null)
   [ -z "$_nodes" ] && _nodes=$(get_local_node)
+  local _first_node
+  _first_node=$(echo "$_nodes" | awk 'NR==1{print $1}')
 
-  # For shared storage (NFS, Ceph) the same image is visible from every node —
-  # query and act on only the first node to avoid duplicate listings and
-  # failure messages from trying to remove an already-gone file.
-  local _img_is_shared
-  _img_is_shared=$(pvesh get /storage/"${_img_store}" --output-format json 2>/dev/null | python3 -c "
+  # Get all storage pools that support vztmpl content type.
+  # For shared pools query only the first node to avoid duplicate listings.
+  local _vztmpl_stores
+  _vztmpl_stores=$(pvesh get /storage --output-format json 2>/dev/null | python3 -c "
 import sys, json
-try: print('1' if json.load(sys.stdin).get('shared') else '0')
-except: print('0')
+try:
+    for s in json.load(sys.stdin):
+        if 'vztmpl' in s.get('content', ''):
+            print(s['storage'] + ':' + ('1' if s.get('shared') else '0'))
+except: pass
 " 2>/dev/null)
 
-  local _img_nodes
-  if [ "${_img_is_shared}" = "1" ]; then
-    _img_nodes=$(echo "$_nodes" | awk '{print $1}')
-  else
-    _img_nodes="$_nodes"
-  fi
-
-  for _node in $_img_nodes; do
-    while IFS= read -r _tmpl; do
-      [ -n "$_tmpl" ] && { ALPINE_IMAGE_NODES+=("$_node"); ALPINE_IMAGE_PATHS+=("$_tmpl"); }
-    done < <(run_on_node "$_node" pveam list "${_img_store}" 2>/dev/null | \
-      awk '/alpine-.*\.tar\.xz/{print $1}' 2>/dev/null)
-  done
+  local _pool _is_shared _scan_nodes
+  while IFS=':' read -r _pool _is_shared; do
+    [ -z "$_pool" ] && continue
+    if [ "${_is_shared}" = "1" ]; then
+      _scan_nodes="$_first_node"
+    else
+      _scan_nodes="$_nodes"
+    fi
+    for _node in $_scan_nodes; do
+      while IFS= read -r _tmpl; do
+        [ -n "$_tmpl" ] && { ALPINE_IMAGE_NODES+=("$_node"); ALPINE_IMAGE_PATHS+=("$_tmpl"); }
+      done < <(run_on_node "$_node" pveam list "${_pool}" 2>/dev/null | \
+        awk '/alpine-.*\.tar\.xz/{print $1}' 2>/dev/null)
+    done
+  done <<< "$_vztmpl_stores"
 
   if [ ${#LAB_CTIDS[@]} -eq 0 ] && [ -z "$TEMPLATE_CTID" ] && [ ${#ALPINE_IMAGE_PATHS[@]} -eq 0 ]; then
     echo "Nothing to clean up."
@@ -4132,7 +4140,7 @@ except: print('0')
   fi
   if [ ${#ALPINE_IMAGE_PATHS[@]} -gt 0 ]; then
     echo ""
-    echo "Alpine template images (${_img_store}):"
+    echo "Alpine template images:"
     for i in "${!ALPINE_IMAGE_PATHS[@]}"; do
       echo "  ${ALPINE_IMAGE_PATHS[$i]} (on ${ALPINE_IMAGE_NODES[$i]})"
     done
