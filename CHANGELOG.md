@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.5.0] - 2026-03-09
+
+### Added
+- **Multi-environment deployment** — after selecting scope (Data Center, Branch, or Both), the deploy flow now prompts for how many environments of each type to create (default: 1). Each environment gets its own CTID range and VLAN tag, entered sequentially. VLAN uniqueness is validated across all environments before deployment begins. The same workload selection is replicated across all environments of the same type. Containers are named `hq1-<slug><n>`, `hq2-<slug><n>`, `branch1-<slug><n>`, etc.
+
+### Fixed
+- **`_cleanup` Alpine image detection** — the cleanup command now scans all storage pools with `vztmpl` content type rather than only the pool configured in `IMAGE_STORAGE`. Previously, if the Alpine image was downloaded to a different pool than the current `IMAGE_STORAGE` setting (e.g., downloaded to `local` but config later updated to an NFS pool), the image was silently skipped during cleanup.
+
 ## [3.4.2] - 2026-02-20
 
 ### Fixed

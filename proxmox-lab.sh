@@ -13,7 +13,7 @@ YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 CYAN='\033[0;36m'
 NC='\033[0m'
-VERSION="3.4.2"
+VERSION="3.5.0"
 
 CONFIG_FILE="${HOME}/.proxmox-lab.conf"
 if [ -f "$CONFIG_FILE" ]; then
@@ -1052,19 +1052,26 @@ _select_profile_quantities() {
 }
 
 # Build DEPLOY_LIST entries for a given group from selected profiles + quantities.
-# Generates numbered hostnames (e.g. hq1-fileserver1, branch1-worker2).
-# Accesses globals: _hq_start/_hq_end or _br_start/_br_end, _claimed_ctids,
-#                   VLAN_HQ/VLAN_BRANCH, DEPLOY_LIST
+# Generates numbered hostnames (e.g. hq1-fileserver1, branch2-worker1).
+# Accesses globals: _claimed_ctids, DEPLOY_LIST
 # Sets globals:     HQ_TOTAL or BRANCH_TOTAL (total containers for the group)
 #
 # Args:
 #   group        - "hq" or "branch"
 #   profiles_var - name of indexed array: selected profile names (ordered)
 #   qtys_var     - name of associative array: profile → qty
+#   env_num      - environment number (1, 2, …); used in hostname prefix (default: 1)
+#   range_start  - first CTID in this environment's range
+#   range_end    - last CTID in this environment's range
+#   vlan         - VLAN tag for this environment
 _build_deploy_entries() {
   local group="$1"
   local profiles_var="$2"
   local qtys_var="$3"
+  local env_num="${4:-1}"
+  local range_start="$5"
+  local range_end="$6"
+  local vlan="$7"
 
   local -n _bde_profiles="$profiles_var"
   local -n _bde_qtys="$qtys_var"
@@ -1077,17 +1084,17 @@ _build_deploy_entries() {
     qty="${_bde_qtys[$profile]:-1}"
 
     case "${group}/${profile}" in
-      hq/fileserver)        prefix="hq1-";     slug="fileserver" ;;
-      hq/webapp)            prefix="hq1-";     slug="webapp"     ;;
-      hq/email)             prefix="hq1-";     slug="email"      ;;
-      hq/monitoring)        prefix="hq1-";     slug="monitoring" ;;
-      hq/devops)            prefix="hq1-";     slug="devops"     ;;
-      hq/database)          prefix="hq1-";     slug="database"   ;;
-      branch/office-worker) prefix="branch1-"; slug="worker"     ;;
-      branch/sales)         prefix="branch1-"; slug="sales"      ;;
-      branch/developer)     prefix="branch1-"; slug="dev"        ;;
-      branch/executive)     prefix="branch1-"; slug="exec"       ;;
-      *)                    prefix="${group}1-"; slug="$profile"  ;;
+      hq/fileserver)        prefix="hq${env_num}-";     slug="fileserver" ;;
+      hq/webapp)            prefix="hq${env_num}-";     slug="webapp"     ;;
+      hq/email)             prefix="hq${env_num}-";     slug="email"      ;;
+      hq/monitoring)        prefix="hq${env_num}-";     slug="monitoring" ;;
+      hq/devops)            prefix="hq${env_num}-";     slug="devops"     ;;
+      hq/database)          prefix="hq${env_num}-";     slug="database"   ;;
+      branch/office-worker) prefix="branch${env_num}-"; slug="worker"     ;;
+      branch/sales)         prefix="branch${env_num}-"; slug="sales"      ;;
+      branch/developer)     prefix="branch${env_num}-"; slug="dev"        ;;
+      branch/executive)     prefix="branch${env_num}-"; slug="exec"       ;;
+      *)                    prefix="${group}${env_num}-"; slug="$profile"  ;;
     esac
 
     case "$profile" in
@@ -1097,23 +1104,12 @@ _build_deploy_entries() {
 
     for (( j=1; j<=qty; j++ )); do
       hostname="${prefix}${slug}${j}"
-      if [ "$group" = "hq" ]; then
-        ctid=$(_next_free_ctid_in_range "$_hq_start" "$_hq_end" "$_claimed_ctids") || {
-          echo -e "${RED}Error: Range ${HQ_RANGE} has no room for all Data Center containers.${NC}"
-          return 1
-        }
-      else
-        ctid=$(_next_free_ctid_in_range "$_br_start" "$_br_end" "$_claimed_ctids") || {
-          echo -e "${RED}Error: Range ${BRANCH_RANGE} has no room for all Branch containers.${NC}"
-          return 1
-        }
-      fi
+      ctid=$(_next_free_ctid_in_range "$range_start" "$range_end" "$_claimed_ctids") || {
+        echo -e "${RED}Error: Range ${range_start}-${range_end} has no room for all ${group} env ${env_num} containers.${NC}"
+        return 1
+      }
       _claimed_ctids="$_claimed_ctids $ctid"
-      if [ "$group" = "hq" ]; then
-        DEPLOY_LIST+=("${ctid} ${hostname} ${VLAN_HQ} ${mem} hq ${offset}")
-      else
-        DEPLOY_LIST+=("${ctid} ${hostname} ${VLAN_BRANCH} ${mem} branch ${offset}")
-      fi
+      DEPLOY_LIST+=("${ctid} ${hostname} ${vlan} ${mem} ${group} ${offset}")
       offset=$(( offset + 1 ))
       total=$(( total + 1 ))
     done
@@ -1284,9 +1280,9 @@ except: print('0')
   echo ""
   echo -e "${BLUE}5. Deployment Scope${NC}"
   echo "What would you like to deploy?"
-  echo "  1) Both Data Center and Branch containers (11 total)"
-  echo "  2) Data Center only (6 containers)"
-  echo "  3) Branch UserNet only (5 containers)"
+  echo "  1) Both Data Center and Branch"
+  echo "  2) Data Center only"
+  echo "  3) Branch UserNet only"
   read -p "Select scope [1-3] (default: 1): " scope_choice
 
   DEPLOY_HQ=false
@@ -1298,6 +1294,35 @@ except: print('0')
     3) DEPLOY_BRANCH=true ;;
     *) DEPLOY_HQ=true; DEPLOY_BRANCH=true ;;
   esac
+
+  NUM_HQ_ENVS=1
+  NUM_BRANCH_ENVS=1
+
+  if $DEPLOY_HQ; then
+    while true; do
+      read -p "  How many Data Center environments? [1]: " _num_input
+      _num_input="${_num_input:-1}"
+      if [[ "$_num_input" =~ ^[1-9][0-9]*$ ]]; then
+        NUM_HQ_ENVS="$_num_input"
+        break
+      else
+        echo -e "${RED}  Please enter a positive integer.${NC}"
+      fi
+    done
+  fi
+
+  if $DEPLOY_BRANCH; then
+    while true; do
+      read -p "  How many Branch environments? [1]: " _num_input
+      _num_input="${_num_input:-1}"
+      if [[ "$_num_input" =~ ^[1-9][0-9]*$ ]]; then
+        NUM_BRANCH_ENVS="$_num_input"
+        break
+      else
+        echo -e "${RED}  Please enter a positive integer.${NC}"
+      fi
+    done
+  fi
 
   # 6. Workload Selection
   local HQ_PROFILE_NAMES=("fileserver" "webapp" "email" "monitoring" "devops" "database")
@@ -1384,29 +1409,69 @@ except: print('0')
     esac
   fi
 
-  # 8. HQ Config
+  # 8. HQ Config (one prompt per environment)
+  declare -a HQ_ENV_RANGES=()
+  declare -a HQ_ENV_VLANS=()
   if $DEPLOY_HQ; then
-    echo ""
-    echo -e "${BLUE}8. Data Center Configuration${NC}"
-    read_ctid_range "Data Center CTID range" "$HQ_TOTAL" "HQ_RANGE"
-    read_with_default "Data Center VLAN tag" "${VLAN_HQ:-}" "VLAN_HQ"
+    for (( _env=1; _env<=NUM_HQ_ENVS; _env++ )); do
+      echo ""
+      if (( NUM_HQ_ENVS > 1 )); then
+        echo -e "${BLUE}8. Data Center Environment ${_env} Configuration${NC}"
+      else
+        echo -e "${BLUE}8. Data Center Configuration${NC}"
+      fi
+      # Pre-initialize with saved default for env 1; empty for subsequent envs.
+      # _env_range is not declared local so read_ctid_range can set it via printf -v.
+      if (( _env == 1 )); then
+        _env_range="${HQ_RANGE:-}"; _env_vlan="${VLAN_HQ:-}"
+      else
+        _env_range=""; _env_vlan=""
+      fi
+      read_ctid_range "Data Center env ${_env} CTID range" "$HQ_TOTAL" "_env_range"
+      read_with_default "Data Center env ${_env} VLAN tag" "$_env_vlan" "_env_vlan"
+      HQ_ENV_RANGES+=("$_env_range")
+      HQ_ENV_VLANS+=("$_env_vlan")
+    done
   fi
 
-  # 9. Branch Config
+  # 9. Branch Config (one prompt per environment)
+  declare -a BR_ENV_RANGES=()
+  declare -a BR_ENV_VLANS=()
   if $DEPLOY_BRANCH; then
-    echo ""
-    echo -e "${BLUE}9. Branch UserNet Configuration${NC}"
-    read_ctid_range "Branch CTID range" "$BRANCH_TOTAL" "BRANCH_RANGE"
-    read_with_default "Branch VLAN tag" "${VLAN_BRANCH:-}" "VLAN_BRANCH"
+    for (( _env=1; _env<=NUM_BRANCH_ENVS; _env++ )); do
+      echo ""
+      if (( NUM_BRANCH_ENVS > 1 )); then
+        echo -e "${BLUE}9. Branch UserNet Environment ${_env} Configuration${NC}"
+      else
+        echo -e "${BLUE}9. Branch UserNet Configuration${NC}"
+      fi
+      if (( _env == 1 )); then
+        _env_range="${BRANCH_RANGE:-}"; _env_vlan="${VLAN_BRANCH:-}"
+      else
+        _env_range=""; _env_vlan=""
+      fi
+      read_ctid_range "Branch env ${_env} CTID range" "$BRANCH_TOTAL" "_env_range"
+      read_with_default "Branch env ${_env} VLAN tag" "$_env_vlan" "_env_vlan"
+      BR_ENV_RANGES+=("$_env_range")
+      BR_ENV_VLANS+=("$_env_vlan")
+    done
   fi
+
+  # Validate no VLAN is used by more than one environment
+  declare -A _seen_vlans=()
+  for _v in "${HQ_ENV_VLANS[@]}" "${BR_ENV_VLANS[@]}"; do
+    if [ -n "${_seen_vlans[$_v]+x}" ]; then
+      echo ""
+      echo -e "${RED}Error: VLAN ${_v} is assigned to more than one environment.${NC}"
+      echo "Each environment must use a unique VLAN tag."
+      return 1
+    fi
+    _seen_vlans[$_v]=1
+  done
 
   # Scan existing cluster CTs so we can assign only free CTIDs.
   echo "Scanning for existing containers..."
   _load_ct_data
-
-  # Parse configured ranges
-  IFS='-' read -r _hq_start _hq_end <<< "${HQ_RANGE:-}"
-  IFS='-' read -r _br_start _br_end <<< "${BRANCH_RANGE:-}"
 
   # Build full container list with CTID, hostname, VLAN, memory.
   # CTIDs are assigned in order within the configured range, skipping any
@@ -1415,10 +1480,16 @@ except: print('0')
   declare -a DEPLOY_LIST=()
   _claimed_ctids=""
   if $DEPLOY_HQ; then
-    _build_deploy_entries "hq" HQ_SELECTED HQ_QTYS
+    for (( _env=0; _env<NUM_HQ_ENVS; _env++ )); do
+      IFS='-' read -r _rs _re <<< "${HQ_ENV_RANGES[$_env]}"
+      _build_deploy_entries "hq" HQ_SELECTED HQ_QTYS "$((_env+1))" "$_rs" "$_re" "${HQ_ENV_VLANS[$_env]}"
+    done
   fi
   if $DEPLOY_BRANCH; then
-    _build_deploy_entries "branch" BRANCH_SELECTED BRANCH_QTYS
+    for (( _env=0; _env<NUM_BRANCH_ENVS; _env++ )); do
+      IFS='-' read -r _rs _re <<< "${BR_ENV_RANGES[$_env]}"
+      _build_deploy_entries "branch" BRANCH_SELECTED BRANCH_QTYS "$((_env+1))" "$_rs" "$_re" "${BR_ENV_VLANS[$_env]}"
+    done
   fi
 
   # Assign each container to a node
@@ -1635,31 +1706,47 @@ except: print('0 0')" 2>/dev/null || echo "0 0")"
   echo "Nodes:           ${SELECTED_NODES[*]}"
 
   if $DEPLOY_HQ; then
-    _hq_ctids=""
-    for entry in "${DEPLOY_LIST[@]}"; do
-      read -r ctid _ _ _ grp _ <<< "$entry"
-      [ "$grp" = "hq" ] && _hq_ctids="$_hq_ctids $ctid"
+    for (( _env=0; _env<NUM_HQ_ENVS; _env++ )); do
+      local _ev="${HQ_ENV_VLANS[$_env]}"
+      local _er="${HQ_ENV_RANGES[$_env]}"
+      local _ectids=""
+      for entry in "${DEPLOY_LIST[@]}"; do
+        read -r ctid _ evlan _ grp _ <<< "$entry"
+        [ "$grp" = "hq" ] && [ "$evlan" = "$_ev" ] && _ectids="$_ectids $ctid"
+      done
+      echo ""
+      if (( NUM_HQ_ENVS > 1 )); then
+        echo -e "${CYAN}Data Center (env $((_env+1))):${NC}"
+      else
+        echo -e "${CYAN}Data Center:${NC}"
+      fi
+      echo "  VLAN Tag:    ${_ev}"
+      echo "  Range:       ${_er}"
+      echo "  CTIDs:       ${_ectids# }"
+      echo "  Containers:  ${HQ_TOTAL}"
     done
-    echo ""
-    echo -e "${CYAN}Data Center:${NC}"
-    echo "  VLAN Tag:    ${VLAN_HQ}"
-    echo "  Range:       ${HQ_RANGE}"
-    echo "  CTIDs:       ${_hq_ctids# }"
-    echo "  Containers:  ${HQ_TOTAL}"
   fi
 
   if $DEPLOY_BRANCH; then
-    _br_ctids=""
-    for entry in "${DEPLOY_LIST[@]}"; do
-      read -r ctid _ _ _ grp _ <<< "$entry"
-      [ "$grp" = "branch" ] && _br_ctids="$_br_ctids $ctid"
+    for (( _env=0; _env<NUM_BRANCH_ENVS; _env++ )); do
+      local _ev="${BR_ENV_VLANS[$_env]}"
+      local _er="${BR_ENV_RANGES[$_env]}"
+      local _ectids=""
+      for entry in "${DEPLOY_LIST[@]}"; do
+        read -r ctid _ evlan _ grp _ <<< "$entry"
+        [ "$grp" = "branch" ] && [ "$evlan" = "$_ev" ] && _ectids="$_ectids $ctid"
+      done
+      echo ""
+      if (( NUM_BRANCH_ENVS > 1 )); then
+        echo -e "${CYAN}Branch UserNet (env $((_env+1))):${NC}"
+      else
+        echo -e "${CYAN}Branch UserNet:${NC}"
+      fi
+      echo "  VLAN Tag:    ${_ev}"
+      echo "  Range:       ${_er}"
+      echo "  CTIDs:       ${_ectids# }"
+      echo "  Containers:  ${BRANCH_TOTAL}"
     done
-    echo ""
-    echo -e "${CYAN}Branch UserNet:${NC}"
-    echo "  VLAN Tag:    ${VLAN_BRANCH}"
-    echo "  Range:       ${BRANCH_RANGE}"
-    echo "  CTIDs:       ${_br_ctids# }"
-    echo "  Containers:  ${BRANCH_TOTAL}"
   fi
 
   echo ""
@@ -1758,24 +1845,43 @@ exit(0 if '${TMPL_POOL}' in pools else 1)
   section_header "✓ Deployment Complete"
 
   if $DEPLOY_HQ; then
-    echo -e "${CYAN}Data Center (VLAN ${VLAN_HQ}):${NC}"
-    for entry in "${DEPLOY_LIST[@]}"; do
-      read -r ctid hostname _ _ grp _ <<< "$entry"
-      [ "$grp" = "hq" ] && echo "  CT ${ctid}: ${hostname} → ${CTID_NODES[$ctid]}"
+    for (( _env=0; _env<NUM_HQ_ENVS; _env++ )); do
+      local _ev="${HQ_ENV_VLANS[$_env]}"
+      if (( NUM_HQ_ENVS > 1 )); then
+        echo -e "${CYAN}Data Center env $((_env+1)) (VLAN ${_ev}):${NC}"
+      else
+        echo -e "${CYAN}Data Center (VLAN ${_ev}):${NC}"
+      fi
+      for entry in "${DEPLOY_LIST[@]}"; do
+        read -r ctid hostname evlan _ grp _ <<< "$entry"
+        [ "$grp" = "hq" ] && [ "$evlan" = "$_ev" ] && \
+          echo "  CT ${ctid}: ${hostname} → ${CTID_NODES[$ctid]}"
+      done
     done
   fi
 
   if $DEPLOY_BRANCH; then
-    echo ""
-    echo -e "${CYAN}Branch UserNet (VLAN ${VLAN_BRANCH}):${NC}"
-    for entry in "${DEPLOY_LIST[@]}"; do
-      read -r ctid hostname _ _ grp _ <<< "$entry"
-      [ "$grp" = "branch" ] && echo "  CT ${ctid}: ${hostname} → ${CTID_NODES[$ctid]}"
+    for (( _env=0; _env<NUM_BRANCH_ENVS; _env++ )); do
+      local _ev="${BR_ENV_VLANS[$_env]}"
+      echo ""
+      if (( NUM_BRANCH_ENVS > 1 )); then
+        echo -e "${CYAN}Branch UserNet env $((_env+1)) (VLAN ${_ev}):${NC}"
+      else
+        echo -e "${CYAN}Branch UserNet (VLAN ${_ev}):${NC}"
+      fi
+      for entry in "${DEPLOY_LIST[@]}"; do
+        read -r ctid hostname evlan _ grp _ <<< "$entry"
+        [ "$grp" = "branch" ] && [ "$evlan" = "$_ev" ] && \
+          echo "  CT ${ctid}: ${hostname} → ${CTID_NODES[$ctid]}"
+      done
     done
   fi
 
   echo ""
   echo "Next steps: Start containers (option 3), then install traffic gen (option 4)"
+  # Persist first-env values back to single-value config keys for backward-compatible defaults
+  [ ${#HQ_ENV_VLANS[@]} -gt 0 ]  && VLAN_HQ="${HQ_ENV_VLANS[0]}"  && HQ_RANGE="${HQ_ENV_RANGES[0]}"
+  [ ${#BR_ENV_VLANS[@]} -gt 0 ]  && VLAN_BRANCH="${BR_ENV_VLANS[0]}" && BRANCH_RANGE="${BR_ENV_RANGES[0]}"
   _maybe_save_config
 }
 
@@ -3974,36 +4080,44 @@ cmd_system_cleanup() {
     [ -n "$TEMPLATE_NODE" ] && TEMPLATE_CTID="$TEMPLATE_ID"
   fi
 
-  # Alpine images — check every cluster node via pveam
-  local _img_store="${IMAGE_STORAGE:-local}"
+  # Alpine images — scan all vztmpl-capable storage pools across the cluster.
+  # IMAGE_STORAGE config reflects where new downloads go, but the image may have
+  # been placed in a different pool when create-template ran. Scanning all pools
+  # avoids false "nothing to clean up" results from a config mismatch.
   declare -a ALPINE_IMAGE_NODES=() ALPINE_IMAGE_PATHS=()
   local _nodes _node
   _nodes=$(get_cluster_nodes 2>/dev/null)
   [ -z "$_nodes" ] && _nodes=$(get_local_node)
+  local _first_node
+  _first_node=$(echo "$_nodes" | awk 'NR==1{print $1}')
 
-  # For shared storage (NFS, Ceph) the same image is visible from every node —
-  # query and act on only the first node to avoid duplicate listings and
-  # failure messages from trying to remove an already-gone file.
-  local _img_is_shared
-  _img_is_shared=$(pvesh get /storage/"${_img_store}" --output-format json 2>/dev/null | python3 -c "
+  # Get all storage pools that support vztmpl content type.
+  # For shared pools query only the first node to avoid duplicate listings.
+  local _vztmpl_stores
+  _vztmpl_stores=$(pvesh get /storage --output-format json 2>/dev/null | python3 -c "
 import sys, json
-try: print('1' if json.load(sys.stdin).get('shared') else '0')
-except: print('0')
+try:
+    for s in json.load(sys.stdin):
+        if 'vztmpl' in s.get('content', ''):
+            print(s['storage'] + ':' + ('1' if s.get('shared') else '0'))
+except: pass
 " 2>/dev/null)
 
-  local _img_nodes
-  if [ "${_img_is_shared}" = "1" ]; then
-    _img_nodes=$(echo "$_nodes" | awk '{print $1}')
-  else
-    _img_nodes="$_nodes"
-  fi
-
-  for _node in $_img_nodes; do
-    while IFS= read -r _tmpl; do
-      [ -n "$_tmpl" ] && { ALPINE_IMAGE_NODES+=("$_node"); ALPINE_IMAGE_PATHS+=("$_tmpl"); }
-    done < <(run_on_node "$_node" pveam list "${_img_store}" 2>/dev/null | \
-      awk '/alpine-.*\.tar\.xz/{print $1}' 2>/dev/null)
-  done
+  local _pool _is_shared _scan_nodes
+  while IFS=':' read -r _pool _is_shared; do
+    [ -z "$_pool" ] && continue
+    if [ "${_is_shared}" = "1" ]; then
+      _scan_nodes="$_first_node"
+    else
+      _scan_nodes="$_nodes"
+    fi
+    for _node in $_scan_nodes; do
+      while IFS= read -r _tmpl; do
+        [ -n "$_tmpl" ] && { ALPINE_IMAGE_NODES+=("$_node"); ALPINE_IMAGE_PATHS+=("$_tmpl"); }
+      done < <(run_on_node "$_node" pveam list "${_pool}" 2>/dev/null | \
+        awk '/alpine-.*\.tar\.xz/{print $1}' 2>/dev/null)
+    done
+  done <<< "$_vztmpl_stores"
 
   if [ ${#LAB_CTIDS[@]} -eq 0 ] && [ -z "$TEMPLATE_CTID" ] && [ ${#ALPINE_IMAGE_PATHS[@]} -eq 0 ]; then
     echo "Nothing to clean up."
@@ -4026,7 +4140,7 @@ except: print('0')
   fi
   if [ ${#ALPINE_IMAGE_PATHS[@]} -gt 0 ]; then
     echo ""
-    echo "Alpine template images (${_img_store}):"
+    echo "Alpine template images:"
     for i in "${!ALPINE_IMAGE_PATHS[@]}"; do
       echo "  ${ALPINE_IMAGE_PATHS[$i]} (on ${ALPINE_IMAGE_NODES[$i]})"
     done

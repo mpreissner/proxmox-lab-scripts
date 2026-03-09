@@ -2,21 +2,11 @@
 
 An interactive shell script for deploying and managing a Proxmox LXC container-based security testing lab. Automates the creation of a realistic multi-site enterprise network with simulated traffic patterns for testing security solutions like Zscaler, CASB, DLP, and UEBA systems.
 
-## What's New (v3.4.1)
+## What's New (v3.5.0)
 
-**Start containers error reporting** — if any containers fail to start, they are now listed by name after the status table, with a clear recommendation to resolve failures before running Install Traffic Generator, and diagnostic hints (`pct start <CTID>`, `pct exec <CTID> -- dmesg | tail`).
+**Multi-environment deployment** — the deploy flow now prompts for how many Data Center and Branch environments to create (default: 1). Each environment gets its own CTID range and VLAN tag. The same workload selection is replicated across all environments of the same type — containers are named `hq1-<slug><n>`, `hq2-<slug><n>`, `branch1-<slug><n>`, etc.
 
-**Profile viewer shows effective install state** — when opened from the Install Traffic Generator confirm prompt, the profile viewer now shows `[INSTALL]`/`[skip]` labels reflecting the actual security tests selected for the current run (based on your mode 1–4 choice), rather than the TSV file's default `[ON]`/`[OFF]` state. Toggling a test still updates the TSV for future "recommended defaults" installs — the viewer displays a note explaining this.
-
----
-
-## What's New (v3.4.0)
-
-**Workload selection menu** — the Deploy step now shows an interactive checkbox menu for each deployment group (Data Center and Branch) after the scope choice. Select any subset of profiles rather than always deploying the full fixed stack. Each selected profile gets a quantity prompt so you can deploy multiple instances of the same workload (e.g., three `fileserver` containers, two `developer` containers). Containers are numbered sequentially: `hq1-fileserver1`, `hq1-fileserver2`, `branch1-worker1`, etc.
-
-CTID range minimum-count requirements and resource feasibility checks are now computed dynamically from the actual workload selections, rather than being hardcoded to 6 (HQ) and 5 (Branch).
-
-The `install-traffic` profile-to-container mapping is now hostname-based rather than positional, so it works correctly with any combination of profiles and quantities.
+**Cleanup image detection fix** — the cleanup command now scans all `vztmpl`-capable storage pools for Alpine images rather than only the configured `IMAGE_STORAGE` pool, preventing missed images after a storage pool config change.
 
 ---
 
@@ -212,7 +202,7 @@ CTID ranges and VLAN IDs have no built-in defaults — they are entered at deplo
 | Data Center | fileserver, webapp, email, monitoring, devops, database | 1 each (user-selectable) |
 | BranchNet | office-worker, sales, developer, executive | 2 for office-worker, 1 for others (user-selectable) |
 
-Profiles and quantities are chosen interactively at deploy time via the workload selection menu. Containers are named `hq1-<profile><n>` and `branch1-<profile><n>` (e.g., `hq1-fileserver1`, `branch1-worker2`).
+Profiles and quantities are chosen interactively at deploy time via the workload selection menu. Multiple environments of each type are supported — each gets its own CTID range and VLAN. Containers are named `hq<env>-<profile><n>` and `branch<env>-<profile><n>` (e.g., `hq1-fileserver1`, `hq2-fileserver1`, `branch1-worker2`).
 
 ### Resource Allocation
 
@@ -232,12 +222,6 @@ Profiles and quantities are chosen interactively at deploy time via the workload
 ---
 
 ## Traffic Patterns
-
-### Business Hours Simulation
-- **Morning (8-10am):** Email checks, news browsing
-- **Work hours (10am-12pm, 1pm-6pm):** SaaS applications, collaboration tools, GenAI assistants
-- **Lunch (12-1pm):** Personal browsing, shopping, social media attempts
-- **After hours:** Minimal activity (UEBA test fires independently if enabled)
 
 ### Traffic Profiles
 
@@ -297,12 +281,6 @@ The default test assignments are defined in `lab-traffic.tsv` and can be toggled
 | sales | policy-violation, dlp-genai-prompt, dlp-genai-file |
 | executive | ueba, dlp-genai-prompt |
 | All others | none |
-
-### Traffic Volume
-- ~20-40 requests per day per domain
-- Randomized delays (5-60 seconds)
-- Role-appropriate user agents: SDK/tool strings for server profiles, persona-specific browser pools for user profiles
-- Business hours enforcement for user profiles
 
 ---
 
@@ -430,33 +408,10 @@ pct exec <CTID> -- bash
 
 ---
 
-## Use Cases
-
-- **Security Product Testing:** CASB, SWG, DLP, UEBA validation
-- **Policy Development:** Test URL filtering, application control rules
-- **Training Labs:** Demonstrate security product capabilities
-- **Integration Testing:** Validate logging, alerting, blocking mechanisms
-- **Compliance Validation:** Verify data protection controls
-
 ## Contributing
 
-Contributions welcome! Areas for enhancement:
-- Additional traffic profiles (VoIP, streaming, gaming)
-- More security test scenarios
-- Support for VMs in addition to LXC containers
-- Integration with external traffic generators
-- Automated testing frameworks
+Contributions welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
 
 ## License
 
-MIT License - Feel free to use, modify, and distribute.
-
-## Author
-
-Created for building realistic security testing labs on Proxmox VE.
-
-## Acknowledgments
-
-- Traffic patterns based on real-world enterprise usage
-- Security scenarios aligned with common compliance frameworks
-- Built with feedback from security engineering teams
+MIT License
