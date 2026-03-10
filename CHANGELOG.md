@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.5.1] - 2026-03-10
+
+### Fixed
+- **`cmd_windows_configure_tasks` scheduled task creation** — switched PS1 invocation from `-File` mode to `-Command "& '...'"` mode, consistent with all other `qm guest exec` calls in the script. Some QEMU guest agent versions do not pass script parameters correctly in `-File` mode, causing `setup-scheduled-tasks.ps1` to run but silently skip all task registration. Also added exit code and stderr capture so failures surface in the output rather than being silently swallowed.
+- **`cmd_windows_configure_tasks` verification** — replaced the single-task found/missing check with a query that lists all registered `ZscalerTrafficGen-*` tasks and their states, giving the user confirmation of exactly which tasks were created. Note: tasks are registered under the SYSTEM account and are only visible in Task Scheduler when opened as Administrator.
+
 ## [3.5.0] - 2026-03-09
 
 ### Added

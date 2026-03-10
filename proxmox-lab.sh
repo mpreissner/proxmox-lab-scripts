@@ -13,7 +13,7 @@ YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 CYAN='\033[0;36m'
 NC='\033[0m'
-VERSION="3.5.0"
+VERSION="3.5.1"
 
 CONFIG_FILE="${HOME}/.proxmox-lab.conf"
 if [ -f "$CONFIG_FILE" ]; then
@@ -5281,34 +5281,43 @@ cmd_windows_configure_tasks() {
     fi
 
     echo "  Running setup-scheduled-tasks.ps1 -Profiles ${PROFILE_ARG}..."
-    run_on_node "$_vm_node" qm guest exec --synchronous 1 "$vmid" -- \
+    local _exec_json _exec_exit _exec_err
+    _exec_json=$(run_on_node "$_vm_node" qm guest exec --synchronous 1 "$vmid" -- \
       powershell.exe -ExecutionPolicy Bypass -NonInteractive \
-      -File 'C:\ProgramData\proxmox-lab\setup-scheduled-tasks.ps1' \
-      -Profiles "$PROFILE_ARG" >/dev/null 2>&1 || true
+      -Command "& 'C:\ProgramData\proxmox-lab\setup-scheduled-tasks.ps1' -Profiles '${PROFILE_ARG}'" \
+      2>/dev/null) || true
+    if [ -n "$_exec_json" ]; then
+      _exec_exit=$(echo "$_exec_json" | python3 -c "
+import sys, json
+try: print(json.load(sys.stdin).get('exitcode', '?'))
+except: print('?')
+" 2>/dev/null)
+      _exec_err=$(echo "$_exec_json" | python3 -c "
+import sys, json
+try: print(json.load(sys.stdin).get('err-data', '').strip())
+except: pass
+" 2>/dev/null)
+      if [ "${_exec_exit:-0}" != "0" ] && [ "${_exec_exit:-0}" != "?" ]; then
+        echo -e "  ${YELLOW}  PS1 exited with code ${_exec_exit}${NC}"
+      fi
+      if [ -n "$_exec_err" ]; then
+        echo -e "  ${YELLOW}  PS1 stderr: ${_exec_err}${NC}"
+      fi
+    fi
 
     # Allow Task Scheduler service to commit newly registered tasks before querying
     sleep 3
 
-    # setup-scheduled-tasks.ps1 uses Write-Host throughout (host stream, not stdout),
-    # so qm guest exec out-data is always empty — verify success by querying Task Scheduler
-    local _first_task_suffix
-    case "${selected_profiles[0]}" in
-      office-worker) _first_task_suffix="OfficeWorker" ;;
-      sales)         _first_task_suffix="Sales"        ;;
-      developer)     _first_task_suffix="Developer"    ;;
-      executive)     _first_task_suffix="Executive"    ;;
-      threat)        _first_task_suffix="Threat"       ;;
-      *)             _first_task_suffix=""             ;;
-    esac
-    local _task_check=""
-    if [ -n "$_first_task_suffix" ]; then
-      _task_check=$(_win_exec_ps_capture "$_vm_node" "$vmid" \
-        "\$t=Get-ScheduledTask -TaskName 'ZscalerTrafficGen-${_first_task_suffix}' -ErrorAction SilentlyContinue; if (\$t) { Write-Output 'found' } else { Write-Output 'missing' }")
-    fi
-    if [ "${_task_check}" = "found" ] || [ -z "$_first_task_suffix" ]; then
-      echo -e "  ${GREEN}  ✓ Scheduled tasks configured (profiles: ${PROFILE_ARG})${NC}"
+    local _task_list
+    _task_list=$(_win_exec_ps_capture "$_vm_node" "$vmid" \
+      "Get-ScheduledTask | Where-Object TaskName -like 'ZscalerTrafficGen-*' | ForEach-Object { Write-Output \"\$(\$_.TaskName): \$(\$_.State)\" }")
+    if [ -n "$_task_list" ]; then
+      echo -e "  ${GREEN}  ✓ Scheduled tasks registered:${NC}"
+      while IFS= read -r _tline; do
+        [ -n "$_tline" ] && echo -e "  ${GREEN}    $_tline${NC}"
+      done <<< "$_task_list"
     else
-      echo -e "  ${YELLOW}  Warning: ZscalerTrafficGen-${_first_task_suffix} not found — check Task Scheduler${NC}"
+      echo -e "  ${YELLOW}  Warning: no ZscalerTrafficGen-* tasks found in Task Scheduler${NC}"
     fi
   done
 
