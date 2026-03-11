@@ -13,7 +13,7 @@ YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 CYAN='\033[0;36m'
 NC='\033[0m'
-VERSION="3.5.1"
+VERSION="3.6.0"
 
 CONFIG_FILE="${HOME}/.proxmox-lab.conf"
 if [ -f "$CONFIG_FILE" ]; then
@@ -395,10 +395,12 @@ d = json.load(sys.stdin)
 m = d.get('memory', {})
 total = m.get('total', 0) // 1024 // 1024
 used  = m.get('used',  0) // 1024 // 1024
-free  = m.get('free',  0) // 1024 // 1024
+# Use total-used (approx MemAvailable) rather than MemFree — Linux buffer/cache
+# inflates MemUsed and deflates MemFree; total-used gives a realistic headroom figure.
+avail = max(0, total - used)
 cpus  = d.get('cpuinfo', {}).get('cpus', 0)
 cpup  = round(d.get('cpu', 0) * 100, 1)
-print(f'{total} {used} {free} {cpus} {cpup}')
+print(f'{total} {used} {avail} {cpus} {cpup}')
 "
   pvesh get /nodes/"$node"/lxc --output-format json 2>/dev/null | \
     python3 -c "import sys,json; print(len(json.load(sys.stdin)))" 2>/dev/null || echo 0
@@ -817,7 +819,8 @@ print(' '.join(pools))
   echo "Installing base packages..."
   run_on_node "$NODE" pct exec $TEMPLATE_ID -- sh -c "
     apk update
-    apk add curl wget bind-tools bash jq python3 py3-pip dcron nano vim openrc ca-certificates tzdata
+    apk add curl wget bind-tools bash jq python3 py3-pip dcron nano vim openrc ca-certificates tzdata chromium
+    pip3 install pyppeteer --break-system-packages 2>/dev/null || pip3 install pyppeteer
 
     # Set timezone
     cp /usr/share/zoneinfo/${TIMEZONE} /etc/localtime
@@ -1098,7 +1101,7 @@ _build_deploy_entries() {
     esac
 
     case "$profile" in
-      monitoring|devops|developer) mem=512 ;;
+      office-worker|monitoring|devops|developer|sales|executive) mem=512 ;;
       *) mem="${MEMORY:-256}" ;;
     esac
 
@@ -1184,7 +1187,7 @@ cmd_deploy_containers() {
   declare -A NODE_CT_COUNT=()
 
   printf "  %-10s %-12s %-12s %-12s %-8s %-8s %-6s\n" \
-    "Node" "RAM Total" "RAM Used" "RAM Free" "CPUs" "CPU%" "CTs"
+    "Node" "RAM Total" "RAM Used" "RAM Avail" "CPUs" "CPU%" "CTs"
   echo "  ----------------------------------------------------------------------"
 
   for node in "${ALL_NODES[@]}"; do
@@ -1605,15 +1608,15 @@ except: print('0')
   _configure_clone_type
 
   # Disk Space Check
-  # Estimates: full clone ~300 MB/container; linked clone ~100 MB/container (delta only).
-  # These are conservative upper bounds — Alpine containers are small but this gives headroom.
+  # Estimates: full clone ~400 MB/container; linked clone ~150 MB/container (delta only).
+  # Alpine base + Chromium + pyppeteer brings the template to ~350-400 MB.
   echo ""
   echo -e "${BLUE}Disk Space Check (${STORAGE}):${NC}"
   if [ "${CLONE_TYPE:-full}" = "linked" ]; then
-    _per_ct_disk_mb=100
+    _per_ct_disk_mb=150
     _disk_note="linked, delta est."
   else
-    _per_ct_disk_mb=300
+    _per_ct_disk_mb=400
     _disk_note="full clone est."
   fi
   echo "  Est. ${_per_ct_disk_mb} MB/container (${_disk_note})"
@@ -1681,6 +1684,55 @@ except: print('0 0')" 2>/dev/null || echo "0 0")"
     echo ""
     echo -e "${RED}Error: Insufficient disk space on one or more nodes.${NC}"
     echo "Free up space on '${STORAGE}' or reduce the deployment scope."
+    return 1
+  fi
+
+  # RAM Check
+  # Tally total container RAM assigned per node and compare against available RAM.
+  # NODE_FREE is total-used (approx MemAvailable) populated during node info display.
+  echo ""
+  echo -e "${BLUE}RAM Check:${NC}"
+
+  declare -A _node_ram_needed=()
+  for entry in "${DEPLOY_LIST[@]}"; do
+    read -r ctid _ _ mem _ _ <<< "$entry"
+    _rnode="${CTID_NODES[$ctid]}"
+    _node_ram_needed[$_rnode]=$(( ${_node_ram_needed[$_rnode]:-0} + mem ))
+  done
+
+  printf "  %-10s %-14s %-14s %-14s %-10s\n" "Node" "Est. Needed" "Avail Now" "Avail After" "Status"
+  echo "  ---------------------------------------------------------------"
+
+  _RAM_ABORT=false
+  for _rnode in $(printf '%s\n' "${!_node_ram_needed[@]}" | sort); do
+    _needed_ram="${_node_ram_needed[$_rnode]}"
+    _avail_ram="${NODE_FREE[$_rnode]:-0}"
+    _total_ram="${NODE_TOTAL[$_rnode]:-0}"
+    _after_ram=$(( _avail_ram - _needed_ram ))
+
+    if [ "${_total_ram:-0}" -gt 0 ]; then
+      _after_used_pct=$(( (_total_ram - _after_ram) * 100 / _total_ram ))
+    else
+      _after_used_pct=0
+    fi
+
+    if [ "$_avail_ram" -lt "$_needed_ram" ]; then
+      _ram_status="${RED}✗ INSUFFICIENT${NC}"
+      _RAM_ABORT=true
+    elif [ "$_after_used_pct" -ge 85 ]; then
+      _ram_status="${YELLOW}⚠ WARN (${_after_used_pct}% used after)${NC}"
+    else
+      _ram_status="${GREEN}✓ OK${NC}"
+    fi
+    printf "  %-10s %-14s %-14s %-14s " \
+      "$_rnode" "~${_needed_ram} MB" "${_avail_ram} MB" "${_after_ram} MB"
+    echo -e "$_ram_status"
+  done
+
+  if $_RAM_ABORT; then
+    echo ""
+    echo -e "${RED}Error: Insufficient free RAM on one or more nodes.${NC}"
+    echo "Reduce the deployment scope or add more memory."
     return 1
   fi
 
@@ -2625,8 +2677,8 @@ PROMPTS=(
 )
 PROMPT="${PROMPTS[$((RANDOM % ${#PROMPTS[@]}))]}"
 
-PLATFORMS=("chatgpt")
-PLATFORM="${PLATFORMS[0]}"
+PLATFORMS=("chatgpt" "gemini")
+PLATFORM="${PLATFORMS[$((RANDOM % ${#PLATFORMS[@]}))]}"
 
 u1=$(cat /proc/sys/kernel/random/uuid)
 u2=$(cat /proc/sys/kernel/random/uuid)
@@ -2647,6 +2699,9 @@ case "$PLATFORM" in
       -H "User-Agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36" \
       -d "{\"action\":\"next\",\"messages\":[{\"id\":\"${u2}\",\"author\":{\"role\":\"user\"},\"content\":{\"content_type\":\"text\",\"parts\":[\"${jp}\"]},\"metadata\":{}}],\"conversation_id\":\"${u1}\",\"parent_message_id\":\"${u3}\",\"model\":\"auto\",\"timezone_offset_min\":300,\"timezone\":\"America/New_York\",\"conversation_mode\":{\"kind\":\"primary_assistant\"}}" \
       > /dev/null 2>&1 || true
+    ;;
+  gemini)
+    python3 /opt/traffic-gen/utils/gemini-prompt.py "$PROMPT" > /dev/null 2>&1 || true
     ;;
   perplexity)
     # Disabled — prompt submission not generating expected ZIA events.
@@ -2805,6 +2860,98 @@ EOF
 
   run_on_node "$CT_NODE" pct exec $ctid -- chmod +x /opt/traffic-gen/run-security-tests.sh
 
+  run_on_node "$CT_NODE" pct exec $ctid -- bash -c 'cat > /opt/traffic-gen/utils/gemini-prompt.py' <<'EOF'
+#!/usr/bin/env python3
+"""
+Headless Chromium script to submit a prompt to Gemini.
+Navigates to gemini.google.com, types the prompt, and submits it.
+ZIA inspects the outbound browser session and fires a prompt capture event.
+
+Requires: chromium (apk), pyppeteer (pip)
+Usage: python3 gemini-prompt.py "your prompt text"
+"""
+import asyncio
+import sys
+
+
+async def run(prompt):
+    import pyppeteer
+    browser = await pyppeteer.launch(
+        executablePath='/usr/bin/chromium-browser',
+        headless=True,
+        args=[
+            '--no-sandbox',
+            '--disable-setuid-sandbox',
+            '--disable-dev-shm-usage',
+            '--disable-gpu',
+            '--no-zygote',
+            '--disable-extensions',
+            '--disable-background-networking',
+            # Chromium uses its own NSS cert store, not the system OpenSSL store,
+            # so it won't trust the ZIA TLS inspection CA by default.
+            # ZIA inspects at the proxy layer regardless of client cert validation.
+            '--ignore-certificate-errors',
+        ],
+        handleSIGINT=False,
+        handleSIGTERM=False,
+    )
+    try:
+        page = await browser.newPage()
+        await page.setUserAgent(
+            'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) '
+            'AppleWebKit/537.36 (KHTML, like Gecko) '
+            'Chrome/145.0.0.0 Safari/537.36'
+        )
+        await page.setViewport({'width': 1280, 'height': 800})
+
+        await page.goto('https://gemini.google.com/', {
+            'waitUntil': 'networkidle2',
+            'timeout': 30000,
+        })
+
+        # Gemini uses rich-textarea > p[contenteditable] for its prompt input
+        selectors = [
+            'rich-textarea p[contenteditable]',
+            'div[contenteditable="true"]',
+            'textarea',
+        ]
+        input_el = None
+        for sel in selectors:
+            try:
+                input_el = await page.waitForSelector(
+                    sel, {'timeout': 10000, 'visible': True}
+                )
+                if input_el:
+                    break
+            except Exception:
+                continue
+
+        if not input_el:
+            raise RuntimeError('Could not find Gemini input element')
+
+        await input_el.click()
+        await asyncio.sleep(0.5)
+        await page.keyboard.type(prompt, {'delay': 30})
+        await asyncio.sleep(0.5)
+        await page.keyboard.press('Enter')
+
+        # Wait for the request to be sent before closing
+        await asyncio.sleep(6)
+    finally:
+        await browser.close()
+
+
+if __name__ == '__main__':
+    if len(sys.argv) < 2:
+        print('Usage: gemini-prompt.py <prompt>', file=sys.stderr)
+        sys.exit(1)
+    try:
+        asyncio.run(run(sys.argv[1]))
+    except Exception as e:
+        print(f'[gemini-prompt] {e}', file=sys.stderr)
+        sys.exit(1)
+EOF
+
   run_on_node "$CT_NODE" pct exec $ctid -- bash -c 'cat > /opt/traffic-gen/utils/genai.sh' <<'EOF'
 #!/bin/bash
 # GenAI traffic utilities — web-endpoint based prompt submission
@@ -2812,9 +2959,10 @@ EOF
 # This file provides genai_browse() and genai_web_prompt().
 
 genai_browse() {
-  # Browse public GenAI platform homepages (no Copilot — WebSockets; no Gemini — session auth wall)
+  # Browse public GenAI platform homepages (no Copilot — WebSockets)
   local platforms=(
     "https://chatgpt.com"
+    "https://gemini.google.com"
     "https://www.perplexity.ai"
     "https://chat.mistral.ai"
     "https://poe.com"
@@ -2854,6 +3002,12 @@ genai_web_prompt() {
         -H "Oai-Device-Id: ${u1}" \
         -H "User-Agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36" \
         -d "{\"action\":\"next\",\"messages\":[{\"id\":\"${u2}\",\"author\":{\"role\":\"user\"},\"content\":{\"content_type\":\"text\",\"parts\":[\"${jp}\"]},\"metadata\":{}}],\"conversation_id\":\"${u1}\",\"parent_message_id\":\"${u3}\",\"model\":\"auto\",\"timezone_offset_min\":300,\"timezone\":\"America/New_York\",\"conversation_mode\":{\"kind\":\"primary_assistant\"}}" \
+        > /dev/null 2>&1 || true
+      ;;
+    gemini)
+      # Use headless Chromium to submit the prompt via a real browser session.
+      # ZIA inspects the live browser traffic and fires a prompt capture event.
+      python3 /opt/traffic-gen/utils/gemini-prompt.py "$prompt" \
         > /dev/null 2>&1 || true
       ;;
     perplexity)
@@ -3222,6 +3376,11 @@ _tsv_viewer() {
               _tsv_toggle_test "$tsv_file" "$profile" "$tname"
               # Reload TSV data to reflect the change
               _load_tsv "$tsv_file"
+              # Rebuild effective test map for this profile so the viewer
+              # display updates immediately on the next loop iteration.
+              if [ ${#_VIEWER_EFFECTIVE_TESTS[@]} -gt 0 ]; then
+                _VIEWER_EFFECTIVE_TESTS[$profile]=$(_default_security_tests_for_profile "$profile")
+              fi
             else
               echo -e "${RED}Invalid selection${NC}"
             fi
@@ -3576,6 +3735,21 @@ cmd_install_traffic_gen() {
       return 0
     fi
   done
+
+  # If mode 1 was selected, rebuild SECURITY_TESTS from the current TSV state.
+  # The user may have toggled tests in the viewer, and _default_security_tests_for_profile
+  # reads from _TSV_TESTS which was reloaded on each toggle.
+  if [ "${sec_choice:-4}" = "1" ] && $ENABLE_SECURITY_TESTS; then
+    for CTID in "${!TARGET_PROFILES[@]}"; do
+      PROFILE="${TARGET_PROFILES[$CTID]}"
+      TESTS=$(_default_security_tests_for_profile "$PROFILE")
+      if [ -n "$TESTS" ]; then
+        SECURITY_TESTS[$CTID]="$TESTS"
+      else
+        unset "SECURITY_TESTS[$CTID]"
+      fi
+    done
+  fi
 
   echo ""
   echo -e "${GREEN}Starting installation...${NC}"
@@ -4975,10 +5149,43 @@ function Invoke-MistralPrompt {
         }
 }
 
+function Invoke-GeminiPrompt {
+    param([string]$Prompt, [string]$UserAgent)
+    # POST to Gemini web app StreamGenerate endpoint.
+    # f.req body mirrors the real browser request format; no session token.
+    # ZIA inspects the outbound request before the server returns 401/403.
+    $a   = [int64](Get-Random)
+    $b   = [int64](Get-Random)
+    $sid = $a * 10000 + $b
+    if ((Get-Random -Minimum 0 -Maximum 2) -eq 0) { $sid = -$sid }
+    $dateLabel = (Get-Date -Format 'yyyyMMdd')
+    $uri = "https://gemini.google.com/_/BardChatUi/data/assistant.lamda.BardFrontendService/StreamGenerate?bl=boq_assistant-bard-web-server_${dateLabel}.00_p1&f.sid=${sid}&hl=en-US&rt=c"
+    $innerArr  = @(
+        @($Prompt, 0, $null, $null, $null, $null, 0),
+        @('en-US'),
+        @('', '', '', $null, $null, $null, $null, $null, $null, '')
+    )
+    $innerJson = $innerArr | ConvertTo-Json -Depth 5 -Compress
+    $outerJson = '[null,' + ($innerJson | ConvertTo-Json -Compress) + ']'
+    $encoded   = [System.Uri]::EscapeDataString($outerJson)
+    $body      = "f.req=$encoded"
+    Invoke-Traffic -Uri $uri `
+        -Method 'POST' -Body $body -ContentType 'application/x-www-form-urlencoded; charset=UTF-8' `
+        -UserAgent $UserAgent `
+        -Headers @{
+            'Origin'         = 'https://gemini.google.com'
+            'Referer'        = 'https://gemini.google.com/'
+            'Sec-Fetch-Site' = 'same-origin'
+            'Sec-Fetch-Mode' = 'cors'
+            'Accept'         = '*/*'
+        }
+}
+
 function Invoke-GenAIWebPrompt {
     param([string]$Provider, [string]$Prompt, [string]$UserAgent)
     $homepages = @{
         chatgpt    = 'https://chatgpt.com'
+        gemini     = 'https://gemini.google.com'
         perplexity = 'https://www.perplexity.ai'
         mistral    = 'https://chat.mistral.ai'
     }
@@ -4988,6 +5195,7 @@ function Invoke-GenAIWebPrompt {
     }
     switch ($Provider) {
         'chatgpt'    { Invoke-ChatGPTPrompt    -Prompt $Prompt -UserAgent $UserAgent }
+        'gemini'     { Invoke-GeminiPrompt     -Prompt $Prompt -UserAgent $UserAgent }
         'perplexity' { Invoke-PerplexityPrompt -Prompt $Prompt -UserAgent $UserAgent }
         'mistral'    { Invoke-MistralPrompt    -Prompt $Prompt -UserAgent $UserAgent }
     }
@@ -5239,6 +5447,56 @@ cmd_windows_configure_tasks() {
   PROFILE_ARG=$(IFS=','; echo "${selected_profiles[*]}")
   echo -e "  ${CYAN}Selected profiles: ${PROFILE_ARG}${NC}"
 
+  echo ""
+  read_with_default "Timezone for VMs (IANA, e.g. America/New_York; blank = skip)" "${WIN_TIMEZONE:-}" "WIN_TIMEZONE"
+  local _win_tz=""
+  if [ -n "$WIN_TIMEZONE" ]; then
+    # Map common IANA timezone IDs to Windows timezone IDs
+    declare -A _tz_map=(
+      ["America/New_York"]="Eastern Standard Time"
+      ["America/Chicago"]="Central Standard Time"
+      ["America/Denver"]="Mountain Standard Time"
+      ["America/Los_Angeles"]="Pacific Standard Time"
+      ["America/Phoenix"]="US Mountain Standard Time"
+      ["America/Anchorage"]="Alaskan Standard Time"
+      ["Pacific/Honolulu"]="Hawaiian Standard Time"
+      ["America/Toronto"]="Eastern Standard Time"
+      ["America/Vancouver"]="Pacific Standard Time"
+      ["Europe/London"]="GMT Standard Time"
+      ["Europe/Paris"]="W. Europe Standard Time"
+      ["Europe/Berlin"]="W. Europe Standard Time"
+      ["Europe/Amsterdam"]="W. Europe Standard Time"
+      ["Europe/Madrid"]="Romance Standard Time"
+      ["Europe/Rome"]="W. Europe Standard Time"
+      ["Europe/Stockholm"]="W. Europe Standard Time"
+      ["Europe/Zurich"]="W. Europe Standard Time"
+      ["Europe/Warsaw"]="Central European Standard Time"
+      ["Europe/Istanbul"]="Turkey Standard Time"
+      ["Europe/Moscow"]="Russia Time Zone 3"
+      ["Asia/Dubai"]="Arabian Standard Time"
+      ["Asia/Karachi"]="Pakistan Standard Time"
+      ["Asia/Kolkata"]="India Standard Time"
+      ["Asia/Dhaka"]="Bangladesh Standard Time"
+      ["Asia/Bangkok"]="SE Asia Standard Time"
+      ["Asia/Singapore"]="Singapore Standard Time"
+      ["Asia/Shanghai"]="China Standard Time"
+      ["Asia/Tokyo"]="Tokyo Standard Time"
+      ["Asia/Seoul"]="Korea Standard Time"
+      ["Australia/Sydney"]="AUS Eastern Standard Time"
+      ["Australia/Melbourne"]="AUS Eastern Standard Time"
+      ["Australia/Perth"]="W. Australia Standard Time"
+      ["Pacific/Auckland"]="New Zealand Standard Time"
+      ["UTC"]="UTC"
+    )
+    if [ -n "${_tz_map[$WIN_TIMEZONE]+x}" ]; then
+      _win_tz="${_tz_map[$WIN_TIMEZONE]}"
+      echo -e "  ${CYAN}Timezone mapped: ${WIN_TIMEZONE} → ${_win_tz}${NC}"
+    else
+      echo -e "  ${YELLOW}  No mapping for '${WIN_TIMEZONE}' — passing as-is (must be a valid Windows TZ ID)${NC}"
+      _win_tz="$WIN_TIMEZONE"
+    fi
+  fi
+
   local WIN_DEST_DIR='C:\ProgramData\proxmox-lab'
 
   echo ""
@@ -5280,11 +5538,13 @@ cmd_windows_configure_tasks() {
       _win_vm_write_file "$_vm_node" "$vmid" "$WIN_SETUP_PS1" 'C:\ProgramData\proxmox-lab\setup-scheduled-tasks.ps1'
     fi
 
-    echo "  Running setup-scheduled-tasks.ps1 -Profiles ${PROFILE_ARG}..."
+    local _tz_arg=""
+    [ -n "$_win_tz" ] && _tz_arg=" -TimeZone '${_win_tz}'"
+    echo "  Running setup-scheduled-tasks.ps1 -Profiles ${PROFILE_ARG}${_tz_arg}..."
     local _exec_json _exec_exit _exec_err
     _exec_json=$(run_on_node "$_vm_node" qm guest exec --synchronous 1 "$vmid" -- \
       powershell.exe -ExecutionPolicy Bypass -NonInteractive \
-      -Command "& 'C:\ProgramData\proxmox-lab\setup-scheduled-tasks.ps1' -Profiles '${PROFILE_ARG}'" \
+      -Command "& 'C:\ProgramData\proxmox-lab\setup-scheduled-tasks.ps1' -Profiles '${PROFILE_ARG}'${_tz_arg}" \
       2>/dev/null) || true
     if [ -n "$_exec_json" ]; then
       _exec_exit=$(echo "$_exec_json" | python3 -c "
