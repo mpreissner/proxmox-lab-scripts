@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.6.1] - 2026-03-11
+
+### Added
+- **Expanded GenAI prompt banks** — each GenAI-enabled profile (`devops`, `developer`, `sales`, `executive`) now has 12 role-appropriate prompts in `lab-traffic.tsv`, up from 6. New prompts cover GitOps/ArgoCD, Terraform module structure, distributed tracing, cloud cost optimization (devops); idempotent API design, optimistic vs pessimistic locking, SOLID principles, structured logging (developer); negotiation tactics, multi-threading deals, QBR prep (sales); AI governance, regulatory compliance, Series C metrics, build/buy/partner decisions (executive).
+
+### Changed
+- **DLP test PII diversity** — all three DLP test scripts (`dlp-genai-prompt.sh`, `dlp-genai-file.sh`, `dlp-genai-image.sh`) now randomize the fake name from a 10×10 first/last name pool instead of hardcoding "John Smith". `dlp-genai-file.sh` also generates a random home address. All three scripts generate a random date of birth for each run.
+- **DLP prompt variants** — `dlp-genai-prompt.sh` expanded from 3 to 8 prompt variants. Each includes name, DOB, SSN, and credit card, covering customer verification, insurance claims, HR onboarding, collections, background checks, KYC, audit notes, and benefits enrollment.
+- **DLP image dimensions** — `dlp-genai-image.sh` image expanded from 500×180 to 560×210 to accommodate the new DOB and department fields without truncation.
+- **Windows DLP PII diversity** — `win-traffic.ps1` threat session now generates random fake name, SSN, DOB, credit card, bank account, and home address each run, replacing all hardcoded values (`John Smith`, `123-45-6789`, etc.). `piiPrompt` pool expanded from 3 to 8 variants.
+- **Windows DLP Gemini test** — replaced direct `generativelanguage.googleapis.com` API call with `Invoke-GeminiPrompt` so ZIA classifies the traffic as GenAI web app activity and fires both a DLP event and a prompt capture event, matching the Linux behavior.
+
 ## [3.6.0] - 2026-03-11
 
 ### Added

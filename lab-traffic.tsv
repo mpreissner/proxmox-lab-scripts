@@ -70,6 +70,12 @@ genai_prompt	devops	Explain the concept of infrastructure as code and the main b
 genai_prompt	devops	How should I structure a CI/CD pipeline for a Python microservice deployed to Kubernetes?	yes
 genai_prompt	devops	What are best practices for managing secrets in a containerized application environment?	yes
 genai_prompt	devops	What are the most important considerations when setting resource limits and requests in Kubernetes?	yes
+genai_prompt	devops	How do I implement a GitOps workflow using ArgoCD for a multi-environment Kubernetes deployment?	yes
+genai_prompt	devops	What is the best approach for handling database schema migrations in a zero-downtime CI/CD pipeline?	yes
+genai_prompt	devops	How should I structure Terraform modules for a large multi-account AWS organization?	yes
+genai_prompt	devops	What are the tradeoffs between centralized and decentralized logging in a microservices architecture?	yes
+genai_prompt	devops	Explain distributed tracing and how to implement it across services using OpenTelemetry	yes
+genai_prompt	devops	What strategies reduce cloud infrastructure costs without sacrificing reliability or performance?	yes
 
 security_test	devops	eicar	yes
 security_test	devops	dlp-genai-prompt	yes
@@ -129,6 +135,12 @@ genai_prompt	sales	Help me create an agenda for a 30-minute product discovery ca
 genai_prompt	sales	What are good questions to ask during a discovery call to uncover budget and decision timeline?	yes
 genai_prompt	sales	Draft a follow-up email after a product demo that ended without a clear next step	yes
 genai_prompt	sales	Summarize the key trends in enterprise cybersecurity spending this year	yes
+genai_prompt	sales	What negotiation tactics work best when a procurement team pushes back on SaaS pricing?	yes
+genai_prompt	sales	How do I build a mutual success plan to accelerate a stalled enterprise deal?	yes
+genai_prompt	sales	What is the best way to multi-thread a deal when my primary champion leaves the company?	yes
+genai_prompt	sales	Help me craft a business case template a champion can use to get internal buy-in for a security purchase	yes
+genai_prompt	sales	What are effective strategies for shortening the sales cycle in mid-market SaaS deals?	yes
+genai_prompt	sales	How should I prepare for a quarterly business review with a customer who is at risk of churning?	yes
 
 security_test	sales	policy-violation	yes
 security_test	sales	dlp-genai-prompt	yes
@@ -153,6 +165,12 @@ genai_prompt	developer	What are best practices for structuring a REST API in a m
 genai_prompt	developer	What are the pros and cons of using GraphQL versus REST for a new internal API?	yes
 genai_prompt	developer	What is the strangler fig pattern and when should I use it for a legacy system migration?	yes
 genai_prompt	developer	Explain how connection pooling works and why it matters for database performance	yes
+genai_prompt	developer	What are the most effective strategies for reducing latency in a high-throughput distributed system?	yes
+genai_prompt	developer	How do I design an idempotent API that handles retries safely in a distributed environment?	yes
+genai_prompt	developer	What is the difference between optimistic and pessimistic locking and when should I use each?	yes
+genai_prompt	developer	Explain the SOLID principles with a concrete example of how violating each one causes problems	yes
+genai_prompt	developer	What testing strategies should I use for a service that depends heavily on third-party APIs?	yes
+genai_prompt	developer	How do I implement structured logging in a Python service and make it useful for production debugging?	yes
 
 security_test	developer	eicar	yes
 security_test	developer	dlp-genai-prompt	yes
@@ -191,6 +209,12 @@ genai_prompt	executive	Draft talking points for a board presentation on our digi
 genai_prompt	executive	What are the most important metrics for evaluating the health of a SaaS business?	yes
 genai_prompt	executive	Summarize the competitive dynamics in the cloud security market for an executive briefing	yes
 genai_prompt	executive	What should I consider when evaluating a potential strategic acquisition in the cybersecurity space?	yes
+genai_prompt	executive	What governance framework should a board adopt to provide effective oversight of AI risk?	yes
+genai_prompt	executive	How should a CEO communicate a major organizational restructuring to employees, customers, and investors?	yes
+genai_prompt	executive	What are the most important factors in building and retaining a high-performing executive leadership team?	yes
+genai_prompt	executive	Draft an executive summary of the key regulatory compliance risks facing a US-based technology company in 2026	yes
+genai_prompt	executive	What financial metrics should I focus on when preparing for a Series C fundraise?	yes
+genai_prompt	executive	How do I evaluate whether to build, buy, or partner for a critical new product capability?	yes
 
 security_test	executive	ueba	yes
 security_test	executive	dlp-genai-prompt	yes
