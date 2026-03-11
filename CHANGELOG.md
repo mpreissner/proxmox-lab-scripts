@@ -5,6 +5,23 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.6.0] - 2026-03-11
+
+### Added
+- **Gemini headless prompt capture** — Alpine template now includes `chromium` and `pyppeteer`. A new `gemini-prompt.py` helper script is installed to `/opt/traffic-gen/utils/` on each container. It launches headless Chromium, navigates to `gemini.google.com`, types the prompt into the input field, and submits it — producing a real browser session that ZIA inspects for prompt capture. `genai_web_prompt()` and `dlp-genai-prompt.sh` both use this helper for the `gemini` provider. The prior `StreamGenerate` curl approach is removed; it required a JavaScript-generated AT token that is not obtainable without a real browser.
+- **Gemini traffic in profiles** — `genai_browse()` includes `https://gemini.google.com` in the platform homepage list. Gemini is included as a `genai_provider` for the `devops`, `sales`, `developer`, and `executive` profiles in `lab-traffic.tsv`.
+- **Windows Gemini traffic** — `win-traffic.ps1` gains `Invoke-GeminiPrompt` (POST to `StreamGenerate`) and `Invoke-GenAIWebPrompt` routes `gemini` provider requests through it for homepage and API-layer traffic.
+- **Timezone parameter for scheduled tasks** — `cmd_windows_configure_tasks` now prompts for an IANA timezone (e.g. `America/New_York`) and maps it to the corresponding Windows timezone ID before invoking `setup-scheduled-tasks.ps1 -TimeZone '...'`. `setup-scheduled-tasks.ps1` accepts a `-TimeZone` parameter and calls `Set-TimeZone` before creating triggers, so task fire times are interpreted in the correct local timezone rather than UTC. `setup-scheduled-tasks.ps1` bumped to v3.0.3.
+
+### Changed
+- **Container memory** — `office-worker`, `sales`, and `executive` profile containers bumped from 256 MB to 512 MB to accommodate headless Chromium. `developer`, `devops`, and `monitoring` were already at 512 MB. All profiles that invoke headless Chromium (via `genai_web_prompt` or `dlp-genai-prompt`) are now at 512 MB minimum.
+- **Disk space estimates** — full clone estimate updated from 300 MB to 400 MB per container; linked clone from 100 MB to 150 MB. Reflects the larger Alpine template with Chromium (~350-400 MB installed).
+
+### Fixed
+- **Security test toggle not taking effect** — toggling a security test in the TSV viewer during traffic installation (mode 1 "Recommended defaults") had no effect on the current install run. `SECURITY_TESTS` was computed once before the viewer opened and never rebuilt after TSV changes. Fixed by: (1) rebuilding `_VIEWER_EFFECTIVE_TESTS` for the current profile immediately after each toggle so the viewer display updates on the next iteration, and (2) rebuilding `SECURITY_TESTS` from the updated `_TSV_TESTS` after the viewer exits and before installation begins.
+- **Node RAM display** — `get_node_resources()` was reporting `memory.free` (MemFree — truly idle pages) as available RAM. On a busy Proxmox host, Linux's buffer/cache inflates MemUsed and shrinks MemFree dramatically, making nodes appear nearly full when they have plenty of headroom. Now reports `total - used` (approximates MemAvailable) as "RAM Avail", which correctly reflects memory that is actually available for new workloads. Column header updated from "RAM Free" to "RAM Avail".
+- **RAM pre-flight check added** — deployment now validates that each target node has sufficient available RAM for the containers being assigned to it, matching the existing disk space check. Shows estimated needed, available now, and available after deployment per node, with WARN at 85% utilization and abort on insufficient.
+
 ## [3.5.1] - 2026-03-10
 
 ### Fixed

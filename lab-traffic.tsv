@@ -61,6 +61,7 @@ url	devops	api.github.com	yes
 url	devops	hub.docker.com	yes
 
 genai_provider	devops	chatgpt	yes
+genai_provider	devops	gemini	yes
 #genai_provider	devops	mistral	yes
 
 genai_prompt	devops	What are the key differences between blue-green and canary deployment strategies?	yes
@@ -119,6 +120,7 @@ url	sales	zoom.us	yes
 url	sales	hubspot.com	yes
 
 genai_provider	sales	chatgpt	yes
+genai_provider	sales	gemini	yes
 #genai_provider	sales	perplexity	yes
 
 genai_prompt	sales	Write a short cold outreach email introducing a cloud security platform to a CISO	yes
@@ -142,6 +144,7 @@ url	developer	console.aws.amazon.com	yes
 url	developer	hub.docker.com	yes
 
 genai_provider	developer	chatgpt	yes
+genai_provider	developer	gemini	yes
 #genai_provider	developer	mistral	yes
 
 genai_prompt	developer	What is the difference between a process and a thread in modern operating systems?	yes
@@ -179,6 +182,7 @@ url	executive	apple.com	yes
 url	executive	salesforce.com	yes
 
 genai_provider	executive	chatgpt	yes
+genai_provider	executive	gemini	yes
 #genai_provider	executive	perplexity	yes
 
 genai_prompt	executive	Summarize the key strategic implications of generative AI adoption for enterprise IT organizations	yes

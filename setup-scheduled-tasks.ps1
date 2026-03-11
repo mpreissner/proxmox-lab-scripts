@@ -28,10 +28,11 @@
 #>
 param(
     [string]$ScriptPath = "C:\ProgramData\proxmox-lab\win-traffic.ps1",
-    [string[]]$Profiles = @("office-worker", "sales", "developer", "executive", "threat")
+    [string[]]$Profiles = @("office-worker", "sales", "developer", "executive", "threat"),
+    [string]$TimeZone   = ""
 )
 
-$SCRIPT_VERSION = "3.0.2"
+$SCRIPT_VERSION = "3.0.3"
 
 # Normalize: qm guest exec passes -Profiles as a single comma-separated string;
 # split it into a proper array so -contains checks work correctly.
@@ -57,6 +58,18 @@ if (-not (Test-Path $ScriptPath)) {
     Write-Host "Error: win-traffic.ps1 not found at: $ScriptPath" -ForegroundColor Red
     Write-Host "Copy win-traffic.ps1 to that path and re-run, or pass -ScriptPath." -ForegroundColor Red
     exit 1
+}
+
+# ---------------------------------------------------------------------------
+# Timezone  -  set before creating triggers so times are interpreted correctly
+# ---------------------------------------------------------------------------
+if ($TimeZone) {
+    try {
+        Set-TimeZone -Id $TimeZone
+        Write-Host "Timezone set to: $TimeZone" -ForegroundColor Cyan
+    } catch {
+        Write-Host "Warning: could not set timezone '$TimeZone' - $($_.Exception.Message)" -ForegroundColor Yellow
+    }
 }
 
 $TASK_PREFIX = "ZscalerTrafficGen"
