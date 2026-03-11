@@ -62,7 +62,7 @@ url	devops	hub.docker.com	yes
 
 genai_provider	devops	chatgpt	yes
 genai_provider	devops	gemini	yes
-#genai_provider	devops	mistral	yes
+genai_provider	devops	mistral	yes
 
 genai_prompt	devops	What are the key differences between blue-green and canary deployment strategies?	yes
 genai_prompt	devops	What metrics should I monitor to assess the health of a Kubernetes cluster in production?	yes
@@ -157,7 +157,7 @@ url	developer	hub.docker.com	yes
 
 genai_provider	developer	chatgpt	yes
 genai_provider	developer	gemini	yes
-#genai_provider	developer	mistral	yes
+genai_provider	developer	mistral	yes
 
 genai_prompt	developer	What is the difference between a process and a thread in modern operating systems?	yes
 genai_prompt	developer	Explain the CAP theorem and when I should prioritize consistency over availability	yes

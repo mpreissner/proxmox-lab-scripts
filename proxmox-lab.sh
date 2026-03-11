@@ -1101,7 +1101,7 @@ _build_deploy_entries() {
     esac
 
     case "$profile" in
-      office-worker|monitoring|devops|developer|sales|executive) mem=512 ;;
+      office-worker|monitoring|devops|developer|sales|executive) mem=768 ;;
       *) mem="${MEMORY:-256}" ;;
     esac
 
@@ -2690,7 +2690,7 @@ PROMPTS=(
 )
 PROMPT="${PROMPTS[$((RANDOM % ${#PROMPTS[@]}))]}"
 
-PLATFORMS=("chatgpt" "gemini")
+PLATFORMS=("chatgpt" "gemini" "mistral")
 PLATFORM="${PLATFORMS[$((RANDOM % ${#PLATFORMS[@]}))]}"
 
 u1=$(cat /proc/sys/kernel/random/uuid)
@@ -2721,8 +2721,7 @@ case "$PLATFORM" in
     echo "[$(date)] DLP/genai: perplexity skipped"
     ;;
   mistral)
-    # Disabled — blocked by Cloudflare bot protection on web UI; API does not generate prompt captures.
-    echo "[$(date)] DLP/genai: mistral skipped"
+    python3 /opt/traffic-gen/utils/mistral-prompt.py "$PROMPT" > /dev/null 2>&1 || true
     ;;
 esac
 EOF
@@ -2919,6 +2918,8 @@ async def run(prompt):
             # so it won't trust the ZIA TLS inspection CA by default.
             # ZIA inspects at the proxy layer regardless of client cert validation.
             '--ignore-certificate-errors',
+            # Force TCP so ZIA can inspect; QUIC (HTTP/3 over UDP) bypasses TLS inspection.
+            '--disable-quic',
         ],
         handleSIGINT=False,
         handleSIGTERM=False,
@@ -2977,6 +2978,146 @@ if __name__ == '__main__':
         asyncio.run(run(sys.argv[1]))
     except Exception as e:
         print(f'[gemini-prompt] {e}', file=sys.stderr)
+        sys.exit(1)
+EOF
+
+  run_on_node "$CT_NODE" pct exec $ctid -- bash -c 'cat > /opt/traffic-gen/utils/mistral-prompt.py' <<'EOF'
+#!/usr/bin/env python3
+"""
+Headless Chromium script to submit a prompt to Mistral Le Chat.
+Navigates to chat.mistral.ai/chat, types the prompt, and submits it.
+ZIA inspects the outbound browser session and fires a prompt capture event.
+
+Uses --disable-blink-features=AutomationControlled and overrides
+navigator.webdriver to pass Cloudflare bot detection.
+
+Requires: chromium (apk), pyppeteer (pip)
+Usage: python3 mistral-prompt.py "your prompt text"
+"""
+import asyncio
+import sys
+
+
+async def run(prompt):
+    import pyppeteer
+    browser = await pyppeteer.launch(
+        executablePath='/usr/bin/chromium-browser',
+        headless=True,
+        args=[
+            '--no-sandbox',
+            '--disable-setuid-sandbox',
+            '--disable-dev-shm-usage',
+            '--disable-gpu',
+            '--no-zygote',
+            '--disable-extensions',
+            '--disable-background-networking',
+            '--ignore-certificate-errors',
+            # Force TCP so ZIA can inspect; QUIC (HTTP/3 over UDP) bypasses TLS inspection.
+            '--disable-quic',
+            '--disable-blink-features=AutomationControlled',
+        ],
+        handleSIGINT=False,
+        handleSIGTERM=False,
+    )
+    try:
+        page = await browser.newPage()
+        await page.evaluateOnNewDocument(
+            "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
+        )
+        await page.setUserAgent(
+            'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) '
+            'AppleWebKit/537.36 (KHTML, like Gecko) '
+            'Chrome/145.0.0.0 Safari/537.36'
+        )
+        await page.setViewport({'width': 1280, 'height': 800})
+
+        await page.goto('https://chat.mistral.ai/chat', {
+            'waitUntil': 'networkidle2',
+            'timeout': 45000,
+        })
+
+        # Dismiss terms/usage agreement modal if present (shown on first visit
+        # with a fresh browser profile — every headless run qualifies).
+        await asyncio.sleep(1)
+        accepted = await page.evaluate('''() => {
+            const btns = Array.from(document.querySelectorAll('button'));
+            const terms = btns.find(b => {
+                const t = b.textContent.trim().toLowerCase();
+                return t.includes('accept') || t.includes('agree') ||
+                       t === 'continue' || t === 'get started' || t === 'ok';
+            });
+            if (terms) { terms.click(); return true; }
+            return false;
+        }''')
+        if accepted:
+            # Accepting terms may trigger a page navigation — wait for it to settle.
+            try:
+                await page.waitForNavigation({
+                    'waitUntil': 'networkidle2',
+                    'timeout': 15000,
+                })
+            except Exception:
+                # No navigation occurred (just a modal dismissal), give it a moment.
+                await asyncio.sleep(2)
+
+        selectors = [
+            'textarea',
+            'div[contenteditable="true"]',
+            'div[role="textbox"]',
+        ]
+        input_el = None
+        for sel in selectors:
+            try:
+                input_el = await page.waitForSelector(
+                    sel, {'timeout': 10000, 'visible': True}
+                )
+                if input_el:
+                    break
+            except Exception:
+                continue
+
+        if not input_el:
+            raise RuntimeError('Could not find Mistral input element')
+
+        await input_el.click()
+        await asyncio.sleep(0.5)
+        await page.keyboard.type(prompt, {'delay': 30})
+        await asyncio.sleep(0.8)
+
+        # Click the send button
+        send_selectors = [
+            'button[aria-label="Send question"]',
+            'button[aria-label="Send"]',
+            'button[aria-label="Send message"]',
+            'button[type="submit"]',
+        ]
+        sent = False
+        for sel in send_selectors:
+            try:
+                btn = await page.querySelector(sel)
+                if btn:
+                    await btn.click()
+                    sent = True
+                    break
+            except Exception:
+                continue
+        if not sent:
+            await page.keyboard.press('Enter')
+
+        # Wait for the request to be sent before closing
+        await asyncio.sleep(6)
+    finally:
+        await browser.close()
+
+
+if __name__ == '__main__':
+    if len(sys.argv) < 2:
+        print('Usage: mistral-prompt.py <prompt>', file=sys.stderr)
+        sys.exit(1)
+    try:
+        asyncio.run(run(sys.argv[1]))
+    except Exception as e:
+        print(f'[mistral-prompt] {e}', file=sys.stderr)
         sys.exit(1)
 EOF
 
@@ -3043,8 +3184,10 @@ genai_web_prompt() {
       echo "[$(date)] GenAI: perplexity skipped"
       ;;
     mistral)
-      # Disabled — blocked by Cloudflare bot protection on web UI; API does not generate prompt captures.
-      echo "[$(date)] GenAI: mistral skipped"
+      # Use headless Chromium with AutomationControlled disabled to pass Cloudflare
+      # bot detection and submit via a real browser session ZIA can inspect.
+      python3 /opt/traffic-gen/utils/mistral-prompt.py "$prompt" \
+        > /dev/null 2>&1 || true
       ;;
   esac
 }
