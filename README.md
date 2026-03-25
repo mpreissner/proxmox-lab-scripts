@@ -2,11 +2,19 @@
 
 An interactive shell script for deploying and managing a Proxmox LXC container-based security testing lab. Automates the creation of a realistic multi-site enterprise network with simulated traffic patterns for testing security solutions like Zscaler, CASB, DLP, and UEBA systems.
 
-## What's New (v3.5.0)
+## What's New (v3.6.1)
 
-**Multi-environment deployment** — the deploy flow now prompts for how many Data Center and Branch environments to create (default: 1). Each environment gets its own CTID range and VLAN tag. The same workload selection is replicated across all environments of the same type — containers are named `hq1-<slug><n>`, `hq2-<slug><n>`, `branch1-<slug><n>`, etc.
+**Gemini prompt capture via headless Chromium** — `gemini-prompt.py` navigates `gemini.google.com` in a real browser session that ZIA can inspect. Gemini is now enabled as a `genai_provider` for devops, sales, developer, and executive profiles.
 
-**Cleanup image detection fix** — the cleanup command now scans all `vztmpl`-capable storage pools for Alpine images rather than only the configured `IMAGE_STORAGE` pool, preventing missed images after a storage pool config change.
+**Expanded GenAI prompt banks** — each GenAI-capable profile (devops, developer, sales, executive) now ships 12 role-appropriate prompts, up from 3.
+
+**Randomized PII across all DLP tests** — fake name, date of birth, and home address are randomized on every run across `dlp-genai-prompt.sh`, `dlp-genai-file.sh`, `dlp-genai-image.sh`, and the Windows threat scripts. The DLP document and image canvas were expanded to include the new fields.
+
+**RAM pre-flight check** — deployment now checks available RAM per node before cloning, matching the existing disk pre-flight: a per-node needed/available/after table is shown, a warning fires at 85% utilization, and the deploy aborts if RAM is insufficient.
+
+**Timezone support for Windows scheduled tasks** — `setup-scheduled-tasks.ps1` now accepts a `-TimeZone` parameter (IANA or Windows format) so tasks fire at the correct local time on VMs in non-UTC zones.
+
+**Container memory bumps** — office-worker raised to 512 MB to accommodate headless Chromium; genai-enabled containers (devops, developer, sales, executive) raised to 768 MB for Cloudflare JS overhead.
 
 ---
 
@@ -30,7 +38,7 @@ Provides a complete workflow for building a multi-container lab environment that
 - **Creates Alpine LXC templates** with pre-configured utilities
 - **Deploys Data Center and Branch network containers** with appropriate configurations — an interactive checkbox menu lets you select which profiles to deploy and how many of each; containers distribute across multiple Proxmox cluster nodes with auto-balanced or manual placement; supports linked clones (shared base disk, faster deploy) or full clones depending on storage type and topology
 - **Generates realistic traffic patterns** driven by `lab-traffic.tsv` — a tab-separated data file that defines URLs, GenAI providers, prompts, and security test assignments per profile. Profile scripts are generated dynamically at install time from this file.
-- **Simulates GenAI usage** by POSTing role-appropriate prompts to ChatGPT's web app endpoint — generating prompt capture events visible in Zscaler ZIA logs
+- **Simulates GenAI usage** by submitting role-appropriate prompts to ChatGPT (via API endpoint) and Gemini (via headless Chromium browser session) — generating prompt capture events visible in Zscaler ZIA logs
 - **Configures security tests** independently of normal traffic — DLP (network, GenAI prompt/file/image OCR), AV/malware, policy violations, UEBA anomalies
 - **Manages Windows VMs** via a dedicated submenu: bulk-tags VMs for discovery, installs TLS inspection certificates (skip-if-current), pushes and version-checks traffic scripts, and configures scheduled tasks with profile selection
 
@@ -158,7 +166,7 @@ Generates `win-traffic.ps1` dynamically from `lab-traffic.tsv` and pushes it to 
 
 **Step 4 — Configure Scheduled Tasks**
 
-Pushes `setup-scheduled-tasks.ps1` and runs it on each selected VM. Prompts for which profiles to install (office-worker, sales, developer, executive, threat — default: all). Existing lab tasks are always removed and recreated, so re-running with a different profile set removes orphaned tasks cleanly.
+Pushes `setup-scheduled-tasks.ps1` and runs it on each selected VM. Prompts for which profiles to install (office-worker, sales, developer, executive, threat — default: all) and the VM's local timezone (IANA or Windows format, e.g. `America/New_York` or `Eastern Standard Time`). Existing lab tasks are always removed and recreated, so re-running with a different profile set removes orphaned tasks cleanly.
 
 ### Verification
 
@@ -208,8 +216,10 @@ Profiles and quantities are chosen interactively at deploy time via the workload
 
 | Container Type | Memory | CPU Cores |
 |---------------|--------|-----------|
-| Standard | 256 MB | 1 |
-| Heavy (monitoring, devops, dev) | 512 MB | 1 |
+| Standard (fileserver, webapp, email, database) | 256 MB | 1 |
+| Heavy (monitoring) | 512 MB | 1 |
+| Office (office-worker) | 512 MB | 1 |
+| GenAI-enabled (devops, developer, sales, executive) | 768 MB | 1 |
 
 ### Traffic Schedules
 
@@ -231,12 +241,12 @@ Profiles and quantities are chosen interactively at deploy time via the workload
 | **webapp** | Stripe API, CDN services, OCSP | Stripe-Node, WebServer, OpenSSL, aws-cli | — |
 | **email** | Office 365, Gmail, SpamHaus, ClamAV | Exchange Server, Postfix, SpamAssassin, ClamAV | — |
 | **monitoring** | Ubuntu repos, Datadog, New Relic, Docker Hub, GitHub | Debian APT, Datadog Agent, NewRelic, Docker, GitHub Actions | — |
-| **devops** | npm, PyPI, GitHub, Docker Hub | npm, pip, git, GitHub Actions, Docker | ChatGPT |
+| **devops** | npm, PyPI, GitHub, Docker Hub | npm, pip, git, GitHub Actions, Docker | ChatGPT, Gemini |
 | **database** | AWS RDS, Azure SQL, S3 | aws-sdk-java, Boto3, azsdk-python | — |
 | **office-worker** | Microsoft 365, Slack, Google Docs, news, personal sites | Windows/Mac browser pool (Chrome, Edge, Firefox) | — |
-| **sales** | LinkedIn, Salesforce, Zoom, HubSpot, Expedia | Mac browser pool (Safari, Chrome) | ChatGPT |
-| **developer** | GitHub, StackOverflow, npm, PyPI, AWS Console | Mac/Linux browser pool (Chrome, Firefox) | ChatGPT |
-| **executive** | WSJ, Bloomberg, FT, Reuters, Office 365, travel, Zoom | Mac Safari/Chrome pool | ChatGPT |
+| **sales** | LinkedIn, Salesforce, Zoom, HubSpot, Expedia | Mac browser pool (Safari, Chrome) | ChatGPT, Gemini |
+| **developer** | GitHub, StackOverflow, npm, PyPI, AWS Console | Mac/Linux browser pool (Chrome, Firefox) | ChatGPT, Gemini |
+| **executive** | WSJ, Bloomberg, FT, Reuters, Office 365, travel, Zoom | Mac Safari/Chrome pool | ChatGPT, Gemini |
 
 Server profiles emit role-appropriate SDK and tool user agents matching the software that would realistically generate each request. User profiles pick from a persona-specific browser UA pool once per run and use it consistently throughout, so all requests within a session appear to come from the same device.
 
@@ -246,11 +256,14 @@ GenAI-capable profiles (devops, developer, sales, executive) generate two types 
 
 **Browsing** — periodic GET requests to GenAI platform homepages, simulating a user navigating to an AI tool.
 
-**Prompt submission** — POST requests to ChatGPT's web app endpoint (`chatgpt.com/backend-api/f/conversation`) with role-appropriate business prompts embedded in the request body across all four GenAI-capable profiles (devops, developer, sales, executive).
+**Prompt submission** — two mechanisms are used depending on the platform:
 
-The server returns 401/403 (no valid session token). Zscaler inspects the outbound request body before the response arrives, so **prompt capture events fire in ZIA logs regardless of the server response**. The traffic appears as a real user interacting with a GenAI service.
+- **ChatGPT** — POST requests to the web app endpoint (`chatgpt.com/backend-api/f/conversation`) with role-appropriate business prompts embedded in the request body. The server returns 401/403 (no valid session token). Zscaler inspects the outbound request body before the response arrives, so **prompt capture events fire in ZIA logs regardless of the server response**.
+- **Gemini** — `gemini-prompt.py` drives a headless Chromium session (via pyppeteer) that navigates `gemini.google.com` and submits prompts through the real web UI. ZIA inspects the live browser session, producing prompt capture events identical to a real user visit. `--disable-quic` is passed to force TCP so the session is visible to ZIA.
 
-Microsoft Copilot is excluded — it uses WebSockets which are incompatible with standard TLS inspection. Claude and Gemini are excluded due to session-authenticated endpoints that cannot produce realistic synthetic traffic without active sessions.
+Each GenAI-capable profile ships 12 role-appropriate prompts.
+
+Microsoft Copilot is excluded — it uses WebSockets which are incompatible with standard TLS inspection. Claude is excluded due to session-authenticated endpoints that cannot produce realistic synthetic traffic without active sessions.
 
 ### Security Tests
 
@@ -262,7 +275,7 @@ The default test assignments are defined in `lab-traffic.tsv` and can be toggled
 |------|----------|-------------------|
 | `eicar` | AV | EICAR test file download |
 | `dlp-network` | DLP | POST with fake SSN + CCN to HTTPS endpoint |
-| `dlp-genai-prompt` | DLP | JSON prompt with PII to OpenAI/Anthropic/Google API |
+| `dlp-genai-prompt` | DLP | JSON prompt with PII submitted via browser session across ChatGPT, Gemini, and other platforms |
 | `dlp-genai-file` | DLP | Multipart document upload with PII to AI file API |
 | `dlp-genai-image` | DLP OCR | ImageMagick-rendered PNG with PII to AI vision API |
 | `policy-violation` | Policy | HTTP access to Dropbox, WeTransfer, Mega, Box |
@@ -390,15 +403,15 @@ pct exec <CTID> -- bash
 - Will NOT trigger rate limits or blocklists on normal traffic
 - Safe for production internet connections
 - EICAR test file is industry-standard, non-malicious test payload
-- GenAI prompt submission uses real web app endpoints with no valid session token — server returns 401/403, but the outbound request body is inspected by Zscaler as intended
+- ChatGPT prompt submission uses the real web app endpoint with no valid session token — server returns 401/403, but the outbound request body is inspected by Zscaler as intended. Gemini prompt submission uses a headless Chromium session navigating the live web UI, generating real ZIA prompt capture events
 - GenAI DLP tests POST to real AI APIs with no valid key — server returns 401, but the outbound request is inspected by Zscaler as intended
 - `dlp-genai-image` installs ImageMagick (~10 MB) on the container when enabled
 
 ### Storage Requirements
 - Template: ~50-100 MB
-- Full clone per container: ~200-300 MB (independent copy of template disk)
-- Linked clone per container: ~100 MB delta (base disk shared with template)
-- Total for 11 containers + template — full clones: ~2.5-3.5 GB; linked clones: ~1.2-1.5 GB
+- Full clone per container: ~300-400 MB (independent copy of template disk)
+- Linked clone per container: ~100-150 MB delta (base disk shared with template)
+- Total for 11 containers + template — full clones: ~3.5-4.5 GB; linked clones: ~1.2-1.7 GB
 - Storage pool must support `rootdir` content type; must be snapshot-capable (`lvmthin`, `zfspool`, Ceph RBD) to use linked clones
 
 ### Network Impact
