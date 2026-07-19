@@ -35,3 +35,6 @@ id_rsa*
 
 # AI assist
 .claude
+
+# Mempalace
+mempalace.yaml
