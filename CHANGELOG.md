@@ -5,6 +5,11 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.7.0] - 2026-07-19
+
+### Added
+- **AI Guard prompt tests** — a new `ai-guard-test.ps1`, generated from a new `ai_guard_prompt` section in `lab-traffic.tsv`, sends prompts engineered to trip each AI Guard detector category (brand/reputation risk, code, finance advice, intellectual property, legal advice, PII, prompt injection, secrets, toxicity) to ChatGPT, Gemini, and Perplexity. Unlike `win-traffic.ps1`, this script is prompt-only (no URLs, no file/image uploads), is never installed by "Install / Update Traffic Generator Script" or the scheduled-task rotation, and is only installed on-demand via the new "Install AI Guard Prompt Test Script" option in Windows Tools, which copies the generated script plus a copy of `lab-traffic.tsv` to the VM for later manual, interactive runs — AI Guard's per-category detection requires the authenticated user context that only a Zscaler Client Connector (ZCC)-enrolled Windows host provides.
+
 ## [3.6.1] - 2026-03-11
 
 ### Added
