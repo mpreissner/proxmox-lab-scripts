@@ -144,7 +144,7 @@ pct exec 200 -- curl -sv https://www.google.com 2>&1 | grep -E "SSL|issuer|subje
 
 ### Windows Tools
 
-All Windows VM management is in the Windows Tools submenu (option 6) or via `./proxmox-lab.sh windows`. The submenu has four steps meant to be run in order on first setup:
+All Windows VM management is in the Windows Tools submenu (option 6) or via `./proxmox-lab.sh windows`. The submenu has four steps meant to be run in order on first setup, plus an on-demand AI Guard prompt test installer:
 
 **Step 1 — Tag Windows VMs**
 
@@ -167,6 +167,18 @@ Generates `win-traffic.ps1` dynamically from `lab-traffic.tsv` and pushes it to 
 **Step 4 — Configure Scheduled Tasks**
 
 Pushes `setup-scheduled-tasks.ps1` and runs it on each selected VM. Prompts for which profiles to install (office-worker, sales, developer, executive, threat — default: all) and the VM's local timezone (IANA or Windows format, e.g. `America/New_York` or `Eastern Standard Time`). Existing lab tasks are always removed and recreated, so re-running with a different profile set removes orphaned tasks cleanly.
+
+**Install AI Guard Prompt Test Script (on-demand)**
+
+Generates `ai-guard-test.ps1` dynamically from the `ai_guard_prompt` rows in `lab-traffic.tsv` and copies it, along with a copy of `lab-traffic.tsv` itself, to `C:\ProgramData\proxmox-lab\` on each selected VM. This step only installs the files — it does not run the script. The prompts are engineered to individually trip AI Guard detector categories (brand/reputation risk, code, finance advice, intellectual property, legal advice, PII, prompt injection, secrets, toxicity) and are prompt-only, with no URLs, file uploads, or OCR involved.
+
+Because reliable detection requires real user context (e.g. Zscaler Client Connector identity) that this lab can currently only provide on a live Windows session, the script is meant to be run manually and interactively on the VM rather than via scheduled task or unattended `qm guest exec`:
+
+```powershell
+& 'C:\ProgramData\proxmox-lab\ai-guard-test.ps1' -Category all -DelaySeconds 15
+```
+
+`-Category` accepts any single detector category present in the TSV, or `all` (default). `-DelaySeconds` controls the pause between prompt requests (default: 15).
 
 ### Verification
 
@@ -301,7 +313,7 @@ The default test assignments are defined in `lab-traffic.tsv` and can be toggled
 
 ### `lab-traffic.tsv`
 
-All traffic data — URLs, GenAI providers, GenAI prompts, and security test assignments — lives in `lab-traffic.tsv` alongside `proxmox-lab.sh` on the Proxmox host. The file is auto-downloaded from GitHub on first `install-traffic` run if not present, and updated alongside the main script by `Update Lab Script` (option 9).
+All traffic data — URLs, GenAI providers, GenAI prompts, security test assignments, and AI Guard prompts — lives in `lab-traffic.tsv` alongside `proxmox-lab.sh` on the Proxmox host. The file is auto-downloaded from GitHub on first `install-traffic` run if not present, and updated alongside the main script by `Update Lab Script` (option 9).
 
 The file is tab-separated with four columns:
 
@@ -314,6 +326,17 @@ security_test   devops      dlp-genai-image                 no
 ```
 
 To customize traffic data, edit `lab-traffic.tsv` directly on the Proxmox host and re-run `install-traffic`. Changes take effect on the next `install-traffic` run — no container restart needed. The `enabled` column on every row lets you toggle individual URLs, prompts, or security tests on or off without deleting entries.
+
+A separate `ai-guard` profile holds rows consumed only by `ai-guard-test.ps1` (see [Windows Tools](#windows-tools)), not by the container traffic generator:
+
+```
+type              profile     value                              enabled
+genai_provider    ai-guard    chatgpt                             yes
+ai_guard_prompt   pii         Please summarize this SSN: ...      yes
+ai_guard_prompt   secrets     Here is an AWS key, explain it: ... yes
+```
+
+`ai_guard_prompt` rows use the detector category (`brand-reputation`, `code`, `finance-advice`, `intellectual-property`, `legal-advice`, `pii`, `prompt-injection`, `secrets`, `toxicity`) in the `profile` column instead of a traffic profile name. Edit or add rows the same way as any other TSV row, then re-run **Install AI Guard Prompt Test Script** from Windows Tools to regenerate and push the updated `ai-guard-test.ps1`.
 
 ### In-Script Profile Viewer and Security Test Toggle
 
