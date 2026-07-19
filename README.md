@@ -2,7 +2,9 @@
 
 An interactive shell script for deploying and managing a Proxmox LXC container-based security testing lab. Automates the creation of a realistic multi-site enterprise network with simulated traffic patterns for testing security solutions like Zscaler, CASB, DLP, and UEBA systems.
 
-## What's New (v3.6.1)
+## What's New (v3.7.0)
+
+**AI Guard prompt tests** — a new `ai-guard-test.ps1`, generated from a new `ai_guard_prompt` section in `lab-traffic.tsv`, sends prompts engineered to trip each AI Guard detector category (brand/reputation risk, code, finance advice, intellectual property, legal advice, PII, prompt injection, secrets, toxicity) to ChatGPT, Gemini, and Perplexity. It's prompt-only (no URLs, no file/image uploads) and installed on-demand via the new **Install AI Guard Prompt Test Script** option in Windows Tools for later manual, interactive runs — see [Windows Tools](#windows-tools).
 
 **Gemini prompt capture via headless Chromium** — `gemini-prompt.py` navigates `gemini.google.com` in a real browser session that ZIA can inspect. Gemini is now enabled as a `genai_provider` for devops, sales, developer, and executive profiles.
 
@@ -172,9 +174,18 @@ Pushes `setup-scheduled-tasks.ps1` and runs it on each selected VM. Prompts for 
 
 Generates `ai-guard-test.ps1` dynamically from the `ai_guard_prompt` rows in `lab-traffic.tsv` and copies it, along with a copy of `lab-traffic.tsv` itself, to `C:\ProgramData\proxmox-lab\` on each selected VM. This step only installs the files — it does not run the script. The prompts are engineered to individually trip AI Guard detector categories (brand/reputation risk, code, finance advice, intellectual property, legal advice, PII, prompt injection, secrets, toxicity) and are prompt-only, with no URLs, file uploads, or OCR involved.
 
-Because reliable detection requires real user context (e.g. Zscaler Client Connector identity) that this lab can currently only provide on a live Windows session, the script is meant to be run manually and interactively on the VM rather than via scheduled task or unattended `qm guest exec`:
+Because reliable detection requires real user context (e.g. Zscaler Client Connector identity) that this lab can currently only provide on a live Windows session, the script is meant to be run manually and interactively on the VM rather than via scheduled task or unattended `qm guest exec`.
+
+Open PowerShell on the VM (no admin rights required) and launch it with `-ExecutionPolicy Bypass`, since most machines default to a policy (`Restricted` or `AllSigned`, often enforced by GPO) that blocks unsigned local scripts from running at all:
 
 ```powershell
+powershell.exe -ExecutionPolicy Bypass -File 'C:\ProgramData\proxmox-lab\ai-guard-test.ps1' -Category all -DelaySeconds 15
+```
+
+`-ExecutionPolicy Bypass` here only applies to this one process — it doesn't change the machine's persistent policy. If you're already in a PowerShell prompt and prefer dot-sourcing instead of spawning a subprocess, set the bypass for the current process first:
+
+```powershell
+Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass -Force
 & 'C:\ProgramData\proxmox-lab\ai-guard-test.ps1' -Category all -DelaySeconds 15
 ```
 
