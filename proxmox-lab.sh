@@ -13,7 +13,7 @@ YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 CYAN='\033[0;36m'
 NC='\033[0m'
-VERSION="3.8.0"
+VERSION="3.9.0"
 
 CONFIG_FILE="${HOME}/.proxmox-lab.conf"
 if [ -f "$CONFIG_FILE" ]; then
@@ -4283,8 +4283,10 @@ PY
 # Ask for the z-lab URL, pin, enrollment token and cron hand-over, then fetch
 # install.sh (pinned). Sets ZLAB_URL and ZLAB_PIN (saved to config) and
 # _ZLAB_TOKEN, _ZLAB_FLAGS, _ZLAB_INSTALLER (a temp file; never saved).
+# $1 = yes|no: ask about the cron hand-over. $2 = required|optional: the token
+# (optional: empty means only upgrade containers that are already enrolled).
 _zlab_prompt() {
-  local input ask_cron="${1:-yes}"
+  local input ask_cron="${1:-yes}" token_mode="${2:-required}"
   echo "z-lab shows the URL, pin and token under Settings → Traffic gen → Add agents."
   while true; do
     read -p "z-lab URL (https://host:port) [${ZLAB_URL:-}]: " input
@@ -4314,9 +4316,13 @@ _zlab_prompt() {
   echo -e "${GREEN}✓ Pin matches; fetched install.sh${NC}"
 
   _ZLAB_TOKEN=""
+  local token_prompt="Enrollment token (hidden, not saved): "
+  [ "$token_mode" = "optional" ] && \
+    token_prompt="Enrollment token (hidden, not saved; empty = only upgrade enrolled containers): "
   while true; do
-    read -rsp "Enrollment token (hidden, not saved): " _ZLAB_TOKEN
+    read -rsp "$token_prompt" _ZLAB_TOKEN
     echo ""
+    [ "$token_mode" = "optional" ] && [ -z "$_ZLAB_TOKEN" ] && break
     [[ "$_ZLAB_TOKEN" =~ ^[A-Za-z0-9._~-]{20,128}$ ]] && break
     echo -e "${RED}That doesn't look like an enrollment token${NC}"
   done
@@ -4330,28 +4336,31 @@ _zlab_prompt() {
   return 0
 }
 
-# Runs inside a container. stdin: the token on line 1, then install.sh.
-# $4 = "force" re-enrolls a container that already has an agent (that makes a
-# new agent in z-lab; the old one stays listed as offline).
+# Runs inside a container. stdin: the token on line 1 (may be empty), then
+# install.sh. An enrolled container is upgraded in place by install.sh with no
+# token (and its pin rewritten). $4 = "force" passes --reenroll instead, which
+# makes a new agent in z-lab (the old one stays listed as offline).
 _ZLAB_REMOTE='set -e
-if [ -f /var/lib/zlab-agent/state.json ] && [ "$4" != force ]; then
-  echo "already enrolled; skipped"
+IFS= read -r ZLAB_TOKEN || true
+re=""
+[ "$4" = force ] && re="--reenroll"
+if [ -z "$ZLAB_TOKEN" ] && [ ! -f /var/lib/zlab-agent/state.json ]; then
+  echo "not enrolled and no token given; skipped"
   exit 0
 fi
-IFS= read -r ZLAB_TOKEN
 export ZLAB_TOKEN
 f=$(mktemp)
 trap "rm -f \"$f\"" EXIT
 cat > "$f"
-sh "$f" --zlab "$1" --pin "$2" ${3:+"$3"}
+sh "$f" --zlab "$1" --pin "$2" ${3:+"$3"} ${re:+"$re"}
 # Enrolled: drop any first-boot hook baked into the template.
 rm -f /etc/zlab-agent/bootstrap /etc/zlab-agent/install.sh /etc/local.d/zlab-agent.start'
 
 cmd_install_zlab_agent() {
   _load_config
   section_header "Install z-lab Traffic-Gen Agent"
-  echo "Installs the z-lab agent on every running lab container and enrolls it."
-  echo "Containers that already have an agent are skipped unless you choose to re-enroll."
+  echo "Installs and enrolls the z-lab agent on every running lab container."
+  echo "Containers that already have an agent are upgraded in place (no token use)."
   echo ""
 
   echo "Scanning for containers (cluster-wide)..."
@@ -4381,18 +4390,25 @@ cmd_install_zlab_agent() {
   done
   echo ""
 
-  _zlab_prompt || return 1
-  local force=""
-  echo ""
+  local force="" input
   echo "Re-enrolling makes a new agent in z-lab (the old one stays, offline) and"
   echo "uses a token use per container. Only do it for agents you have revoked."
   read -p "Re-enroll containers that already have an agent? [y/N]: " input
   [[ "$input" =~ ^[Yy]$ ]] && force="force"
-  if [ ${#RUNNING_CTIDS[@]} -gt 50 ]; then
+  echo ""
+  if [ -n "$force" ]; then
+    _zlab_prompt yes required || return 1
+  else
+    _zlab_prompt yes optional || return 1
+    if [ -z "$_ZLAB_TOKEN" ]; then
+      echo "No token: containers without an agent are skipped; enrolled ones are upgraded."
+    fi
+  fi
+  if [ -n "$_ZLAB_TOKEN" ] && [ ${#RUNNING_CTIDS[@]} -gt 50 ]; then
     echo -e "${YELLOW}Note: z-lab's default token allows 50 uses; check yours covers ${#RUNNING_CTIDS[@]}.${NC}"
   fi
   echo ""
-  read -p "Install the agent on all ${#RUNNING_CTIDS[@]} container(s)? [y/N]: " confirm
+  read -p "Install or upgrade the agent on all ${#RUNNING_CTIDS[@]} container(s)? [y/N]: " confirm
   if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
     rm -f "$_ZLAB_INSTALLER"
     echo "Aborted."
@@ -4425,15 +4441,20 @@ cmd_install_zlab_agent() {
     idx=$((idx + 1))
   done
 
-  SUCCESS=0; FAILED=0
+  SUCCESS=0; FAILED=0; SKIPPED=0
   for i in "${!PIDS[@]}"; do
     ctid="${CTID_ORDER[$i]}"
     name="${CT_HOSTNAME_MAP[$ctid]}"
     tmpf="${TMPFILES[$ctid]}"
     if wait "${PIDS[$i]}" 2>/dev/null; then
-      echo -e "${GREEN}✓ CT ${ctid} (${name})${NC}"
-      grep -i "enrolled as\|note:\|commented out\|skipped" "$tmpf" | sed 's/^/    /' || true
-      ((++SUCCESS))
+      if grep -q "; skipped$" "$tmpf"; then
+        echo -e "${YELLOW}- CT ${ctid} (${name})${NC}"
+        ((++SKIPPED))
+      else
+        echo -e "${GREEN}✓ CT ${ctid} (${name})${NC}"
+        ((++SUCCESS))
+      fi
+      grep -i "enrolled as\|upgrading\|note:\|commented out\|skipped" "$tmpf" | sed 's/^/    /' || true
     else
       echo -e "${RED}✗ CT ${ctid} (${name})${NC}"
       sed 's/^/    /' "$tmpf"
@@ -4445,7 +4466,10 @@ cmd_install_zlab_agent() {
   rm -f "$_ZLAB_INSTALLER"
 
   echo ""
-  echo -e "${GREEN}Installed: ${SUCCESS}${NC}"
+  echo -e "${GREEN}Installed or upgraded: ${SUCCESS}${NC}"
+  if [ $SKIPPED -gt 0 ]; then
+    echo -e "${YELLOW}Skipped (not enrolled, no token): ${SKIPPED}${NC}"
+  fi
   echo "The agents appear in z-lab under Traffic gen → Agents."
   if [ $FAILED -gt 0 ]; then
     echo -e "${RED}Failed: ${FAILED}${NC}"
@@ -6431,7 +6455,7 @@ case "${1:-}" in
     echo "  status               Show container status"
     echo "  wizard               Full setup wizard"
     echo "  update-containers    Update packages on all running lab containers"
-    echo "  install-zlab-agent   Install and enroll the z-lab traffic-gen agent on running lab containers"
+    echo "  install-zlab-agent   Install, enroll or upgrade the z-lab traffic-gen agent on running lab containers"
     echo "  update               Check for updates and self-patch"
     echo "  windows              Open Windows Tools submenu (tag VMs, cert, traffic, tasks)"
     echo "  --version            Show version"

@@ -2,6 +2,10 @@
 
 An interactive shell script for deploying and managing a Proxmox LXC container-based security testing lab. Automates the creation of a realistic multi-site enterprise network with simulated traffic patterns for testing security solutions like Zscaler, CASB, DLP, and UEBA systems.
 
+## What's New (v3.9.0)
+
+**z-lab agent upgrades** — `install-zlab-agent` now upgrades containers that already have an agent in place, with no token, instead of skipping them. Leave the token empty to only upgrade. Re-enrolling is still an explicit opt-in. See [z-lab agent](#z-lab-agent).
+
 ## What's New (v3.8.0)
 
 **z-lab traffic-gen agent** — the new **Install z-lab Agent** option (`install-zlab-agent`) installs and enrolls the z-lab agent on every running lab container, so z-lab drives the traffic from its own catalog and schedules. Create Template can also bake it in, so each clone enrolls on first boot. See [z-lab agent](#z-lab-agent).
@@ -236,7 +240,9 @@ z-lab can drive the lab traffic itself: it keeps the catalog (imported from `lab
 2. Run `./proxmox-lab.sh install-zlab-agent` (or menu option 11) and paste them. The URL and pin are saved for next time; the token is not.
 3. Choose whether to comment out the old `/opt/traffic-gen` cron jobs. Leave them if you want both generators running while you compare.
 
-The node checks z-lab's certificate against the pin before it fetches `install.sh`, and the token goes to each container on stdin, not on a command line. Each agent enrolls under its hostname, which sets its profile (`hq1-fileserver1` → `fileserver`). The command also asks whether to comment out the old cron jobs and whether to re-enroll containers that already have an agent (by default they are skipped; re-enrolling makes a new agent and leaves the old one listed as offline).
+The node checks z-lab's certificate against the pin before it fetches `install.sh`, and the token goes to each container on stdin, not on a command line. Each agent enrolls under its hostname, which sets its profile (`hq1-fileserver1` → `fileserver`). The command also asks whether to comment out the old cron jobs and whether to re-enroll containers that already have an agent (re-enrolling makes a new agent and leaves the old one listed as offline).
+
+Run it again to upgrade: containers that already have an agent are upgraded in place (new agent and launcher, and the pin you enter replaces the saved one, which fixes a stale pin) without using the token. Leave the token empty to only upgrade; containers without an agent are then skipped. The in-place upgrade needs the same z-lab URL the agent enrolled with; for a different URL, re-enroll.
 
 To have new containers enroll on their own, answer **y** at step 9 of Create Template. The token is then stored in the template until you recreate it, so create one with an expiry and use count that fit the deployment. A clone that cannot enroll on first boot logs to `/var/log/zlab-agent-bootstrap.log`; run `install-zlab-agent` to fix it.
 
