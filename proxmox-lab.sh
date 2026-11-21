@@ -13,7 +13,7 @@ YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 CYAN='\033[0;36m'
 NC='\033[0m'
-VERSION="3.7.0"
+VERSION="3.8.0"
 
 CONFIG_FILE="${HOME}/.proxmox-lab.conf"
 if [ -f "$CONFIG_FILE" ]; then
@@ -105,6 +105,8 @@ CLONE_TYPE="${CLONE_TYPE:-full}"
 TIMEZONE="${TIMEZONE:-}"
 LAB_TRAFFIC_TSV="${LAB_TRAFFIC_TSV:-}"
 LAB_TRAFFIC_TSV_HASH="${LAB_TRAFFIC_TSV_HASH:-}"
+ZLAB_URL="${ZLAB_URL:-}"
+ZLAB_PIN="${ZLAB_PIN:-}"
 EOF
   echo -e "${GREEN}✓ Settings saved to ~/.proxmox-lab.conf${NC}"
 }
@@ -763,6 +765,21 @@ print(' '.join(pools))
     CERT_PATH=""
   fi
 
+  # 9. z-lab agent (optional)
+  echo ""
+  echo -e "${BLUE}9. z-lab Traffic-Gen Agent (optional)${NC}"
+  echo "If z-lab drives your traffic, each clone can enroll its agent on first boot."
+  echo "The enrollment token is stored in the template until you recreate it."
+  ZLAB_BAKED=false
+  read -p "Bake the z-lab agent into the template? [y/N]: " input
+  if [[ "$input" =~ ^[Yy]$ ]]; then
+    if _zlab_prompt; then
+      ZLAB_BAKED=true
+    else
+      echo -e "${YELLOW}Skipping the z-lab agent.${NC}"
+    fi
+  fi
+
   # Summary
   section_header "Configuration Summary"
   echo "Template ID:    ${TEMPLATE_ID}"
@@ -779,10 +796,17 @@ print(' '.join(pools))
   else
     echo "Certificate:    (none)"
   fi
+  if $ZLAB_BAKED; then
+    echo "z-lab agent:    enroll on first boot with ${ZLAB_URL}"
+  else
+    echo "z-lab agent:    (none)"
+  fi
   echo ""
   read -p "Proceed with creation? [y/N]: " confirm
 
   if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
+    $ZLAB_BAKED && rm -f "$_ZLAB_INSTALLER"
+    ZLAB_BAKED=false
     echo "Aborted by user"
     return 0
   fi
@@ -851,6 +875,12 @@ print(' '.join(pools))
       rm /tmp/${CERT_FILENAME}
     "
     echo -e "${GREEN}✓ Certificate installed in template${NC}"
+  fi
+
+  if $ZLAB_BAKED; then
+    _zlab_bake_template "$NODE" "$TEMPLATE_ID"
+    rm -f "$_ZLAB_INSTALLER"
+    _ZLAB_TOKEN=""
   fi
 
   echo "Stopping and converting to template..."
@@ -4106,7 +4136,15 @@ cmd_full_wizard() {
 
   echo ""
   echo -e "${CYAN}===== STEP 4/4: Install Traffic Generator =====${NC}"
-  cmd_install_traffic_gen
+  if ${ZLAB_BAKED:-false}; then
+    echo "The template enrolls each container with z-lab, which drives the traffic."
+    read -p "Also install the cron-based traffic generator? [y/N]: " input
+    if [[ "$input" =~ ^[Yy]$ ]]; then
+      cmd_install_traffic_gen
+    fi
+  else
+    cmd_install_traffic_gen
+  fi
 
   WIZARD_MODE=false
 
@@ -4200,6 +4238,246 @@ cmd_update_containers() {
     echo -e "${RED}Failed: ${FAILED}${NC}"
     return 1
   fi
+}
+
+# ============================================================
+# MODULE: z-lab Traffic-Gen Agent
+# z-lab (ADR-0011) runs the traffic generator from its own catalog and
+# schedules; each container runs a small pull agent that enrolls with it.
+# ============================================================
+
+# Fetch a path from z-lab over one TLS connection whose leaf certificate must
+# hash (SHA-256) to the pin; prints the body. The pin is checked on the same
+# connection the body arrives on, so nothing unpinned is ever run.
+#   _zlab_fetch_pinned https://zlab:8843 <pin> /agent/v1/install.sh
+_zlab_fetch_pinned() {
+  python3 - "$1" "$2" "$3" <<'PY'
+import hashlib, http.client, ssl, sys, urllib.parse
+url, pin, path = sys.argv[1:4]
+u = urllib.parse.urlsplit(url)
+ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+ctx.check_hostname = False
+ctx.verify_mode = ssl.CERT_NONE
+try:
+    c = http.client.HTTPSConnection(u.hostname, u.port or 443, context=ctx, timeout=30)
+    c.connect()
+    seen = hashlib.sha256(c.sock.getpeercert(True)).hexdigest()
+    if seen != pin:
+        sys.exit(f"certificate pin mismatch: {u.netloc} sent {seen}")
+    c.request("GET", path)
+    r = c.getresponse()
+    body = r.read()
+except (OSError, http.client.HTTPException) as exc:
+    sys.exit(f"cannot reach {u.netloc}: {exc}")
+if r.status != 200:
+    sys.exit(f"{path}: HTTP {r.status}")
+sys.stdout.buffer.write(body)
+PY
+}
+
+# Ask for the z-lab URL, pin, enrollment token and cron hand-over, then fetch
+# install.sh (pinned). Sets ZLAB_URL and ZLAB_PIN (saved to config) and
+# _ZLAB_TOKEN, _ZLAB_FLAGS, _ZLAB_INSTALLER (a temp file; never saved).
+_zlab_prompt() {
+  local input
+  echo "z-lab shows the URL, pin and token under Settings → Traffic gen → Add agents."
+  while true; do
+    read -p "z-lab URL (https://host:port) [${ZLAB_URL:-}]: " input
+    input="${input:-${ZLAB_URL:-}}"
+    input="${input%/}"
+    if [[ "$input" =~ ^https://[A-Za-z0-9.-]+(:[0-9]{1,5})?$ ]]; then
+      ZLAB_URL="$input"; break
+    fi
+    echo -e "${RED}Enter https://host or https://host:port${NC}"
+  done
+  while true; do
+    read -p "Certificate pin (SHA-256, 64 hex) [${ZLAB_PIN:-}]: " input
+    input="${input:-${ZLAB_PIN:-}}"
+    input=$(printf '%s' "$input" | tr 'A-F' 'a-f' | tr -d ': ')
+    if [[ "$input" =~ ^[0-9a-f]{64}$ ]]; then
+      ZLAB_PIN="$input"; break
+    fi
+    echo -e "${RED}The pin is 64 hex characters${NC}"
+  done
+
+  _ZLAB_INSTALLER=$(mktemp)
+  if ! _zlab_fetch_pinned "$ZLAB_URL" "$ZLAB_PIN" /agent/v1/install.sh > "$_ZLAB_INSTALLER"; then
+    rm -f "$_ZLAB_INSTALLER"
+    echo -e "${RED}Could not fetch install.sh from ${ZLAB_URL} with that pin.${NC}"
+    return 1
+  fi
+  echo -e "${GREEN}✓ Pin matches; fetched install.sh${NC}"
+
+  _ZLAB_TOKEN=""
+  while true; do
+    read -rsp "Enrollment token (hidden, not saved): " _ZLAB_TOKEN
+    echo ""
+    [[ "$_ZLAB_TOKEN" =~ ^[A-Za-z0-9._~-]{20,128}$ ]] && break
+    echo -e "${RED}That doesn't look like an enrollment token${NC}"
+  done
+
+  _ZLAB_FLAGS=""
+  echo ""
+  echo "Containers set up by 'install-traffic' run the old generator from cron."
+  read -p "Comment out those /opt/traffic-gen cron jobs so only z-lab drives traffic? [y/N]: " input
+  [[ "$input" =~ ^[Yy]$ ]] && _ZLAB_FLAGS="--replace-cron"
+  return 0
+}
+
+# Runs inside a container. stdin: the token on line 1, then install.sh.
+_ZLAB_REMOTE='set -e
+IFS= read -r ZLAB_TOKEN
+export ZLAB_TOKEN
+f=$(mktemp)
+trap "rm -f \"$f\"" EXIT
+cat > "$f"
+sh "$f" --zlab "$1" --pin "$2" ${3:+"$3"}'
+
+cmd_install_zlab_agent() {
+  _load_config
+  section_header "Install z-lab Traffic-Gen Agent"
+  echo "Installs the z-lab agent on every running lab container and enrolls it."
+  echo "Re-running upgrades the agent and enrolls it again."
+  echo ""
+
+  echo "Scanning for containers (cluster-wide)..."
+  _load_ct_data
+
+  declare -a RUNNING_CTIDS=()
+  declare -A CT_NODE_MAP=() CT_HOSTNAME_MAP=()
+
+  for ctid in $(echo "${!_CT_NODE[@]}" | tr ' ' '\n' | sort -n); do
+    [[ "${_CT_TAGS[$ctid]:-}" == *"lab-managed"* ]] || continue
+    if [ "${_CT_STATUS[$ctid]:-stopped}" = "running" ]; then
+      RUNNING_CTIDS+=("$ctid")
+      CT_NODE_MAP[$ctid]="${_CT_NODE[$ctid]}"
+      CT_HOSTNAME_MAP[$ctid]="${_CT_HOSTNAME[$ctid]:-unknown}"
+    fi
+  done
+
+  if [ ${#RUNNING_CTIDS[@]} -eq 0 ]; then
+    echo -e "${YELLOW}No running lab-managed containers found.${NC}"
+    return 0
+  fi
+
+  echo ""
+  echo "Found ${#RUNNING_CTIDS[@]} running container(s):"
+  for ctid in "${RUNNING_CTIDS[@]}"; do
+    printf "  %-8s %-24s %s\n" "$ctid" "${CT_HOSTNAME_MAP[$ctid]}" "${CT_NODE_MAP[$ctid]}"
+  done
+  echo ""
+
+  _zlab_prompt || return 1
+  if [ ${#RUNNING_CTIDS[@]} -gt 50 ]; then
+    echo -e "${YELLOW}Note: z-lab's default token allows 50 uses; check yours covers ${#RUNNING_CTIDS[@]}.${NC}"
+  fi
+  echo ""
+  read -p "Install the agent on all ${#RUNNING_CTIDS[@]} container(s)? [y/N]: " confirm
+  if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
+    rm -f "$_ZLAB_INSTALLER"
+    echo "Aborted."
+    return 0
+  fi
+  _maybe_save_config
+
+  echo ""
+  echo "Installing (parallel; z-lab allows 10 enrollments at once per source IP,"
+  echo "so containers past the 10th start a few seconds apart)..."
+  echo ""
+
+  declare -a PIDS=() CTID_ORDER=()
+  declare -A TMPFILES=()
+  local idx=0 delay
+
+  for ctid in "${RUNNING_CTIDS[@]}"; do
+    local_tmpf=$(mktemp)
+    CTID_ORDER+=("$ctid")
+    TMPFILES[$ctid]="$local_tmpf"
+    delay=0
+    [ $idx -ge 8 ] && delay=$(( (idx - 7) * 7 ))
+    (
+      if [ $delay -gt 0 ]; then sleep $delay; fi
+      { printf '%s\n' "$_ZLAB_TOKEN"; cat "$_ZLAB_INSTALLER"; } | \
+        run_on_node "${CT_NODE_MAP[$ctid]}" pct exec "$ctid" -- \
+          sh -c "$_ZLAB_REMOTE" sh "$ZLAB_URL" "$ZLAB_PIN" "$_ZLAB_FLAGS"
+    ) > "$local_tmpf" 2>&1 &
+    PIDS+=($!)
+    idx=$((idx + 1))
+  done
+
+  SUCCESS=0; FAILED=0
+  for i in "${!PIDS[@]}"; do
+    ctid="${CTID_ORDER[$i]}"
+    name="${CT_HOSTNAME_MAP[$ctid]}"
+    tmpf="${TMPFILES[$ctid]}"
+    if wait "${PIDS[$i]}" 2>/dev/null; then
+      echo -e "${GREEN}✓ CT ${ctid} (${name})${NC}"
+      grep -i "enrolled as\|note:\|commented out" "$tmpf" | sed 's/^/    /' || true
+      ((++SUCCESS))
+    else
+      echo -e "${RED}✗ CT ${ctid} (${name})${NC}"
+      sed 's/^/    /' "$tmpf"
+      ((++FAILED))
+    fi
+    rm -f "$tmpf"
+  done
+  _ZLAB_TOKEN=""
+  rm -f "$_ZLAB_INSTALLER"
+
+  echo ""
+  echo -e "${GREEN}Installed: ${SUCCESS}${NC}"
+  echo "The agents appear in z-lab under Traffic gen → Agents."
+  if [ $FAILED -gt 0 ]; then
+    echo -e "${RED}Failed: ${FAILED}${NC}"
+    return 1
+  fi
+}
+
+# create-template: bake a first-boot enrollment into the template. Each clone
+# runs the pinned install.sh once on its first boot (under its own hostname, so
+# z-lab picks its profile), then deletes the token and the boot hook. The token
+# stays in the template until you recreate it, so give it a sensible expiry.
+_zlab_bake_template() {
+  local node="$1" ctid="$2"
+  echo "Baking the z-lab agent first-boot enrollment into the template..."
+  { printf '%s\n%s\n%s\n%s\n' "$ZLAB_URL" "$ZLAB_PIN" "$_ZLAB_TOKEN" "$_ZLAB_FLAGS"
+    cat "$_ZLAB_INSTALLER"; } | \
+    run_on_node "$node" pct exec "$ctid" -- sh -c '
+      set -e
+      umask 077
+      mkdir -p /etc/zlab-agent
+      # read, not head: head may buffer past line 4 and eat install.sh
+      for i in 1 2 3 4; do IFS= read -r l; printf "%s\n" "$l"; done > /etc/zlab-agent/bootstrap
+      cat > /etc/zlab-agent/install.sh
+      cat > /etc/local.d/zlab-agent.start <<"EOF"
+#!/bin/sh
+# First boot of a clone: enroll with z-lab (baked by proxmox-lab.sh create-template).
+[ -f /etc/zlab-agent/bootstrap ] || exit 0
+if [ -f /var/lib/zlab-agent/state.json ]; then
+    rm -f /etc/zlab-agent/bootstrap /etc/zlab-agent/install.sh /etc/local.d/zlab-agent.start
+    exit 0
+fi
+(
+    { IFS= read -r url; IFS= read -r pin; IFS= read -r token; IFS= read -r flags; } \
+        < /etc/zlab-agent/bootstrap
+    n=0
+    while [ $n -lt 20 ]; do
+        if ZLAB_TOKEN="$token" sh /etc/zlab-agent/install.sh --zlab "$url" --pin "$pin" $flags
+        then
+            rm -f /etc/zlab-agent/bootstrap /etc/zlab-agent/install.sh \
+                /etc/local.d/zlab-agent.start
+            exit 0
+        fi
+        n=$((n + 1))
+        sleep $((30 + $(od -An -N1 -tu1 /dev/urandom) % 30))
+    done
+    echo "giving up; run proxmox-lab.sh install-zlab-agent"
+) >> /var/log/zlab-agent-bootstrap.log 2>&1 &
+EOF
+      chmod 0755 /etc/local.d/zlab-agent.start
+      rc-update add local default >/dev/null
+    '
+  echo -e "${GREEN}✓ Clones will enroll with z-lab on first boot${NC}"
 }
 
 # ============================================================
@@ -6065,9 +6343,10 @@ main_menu() {
     echo "  8) Update Container Packages"
     echo "  9) Update Lab Script"
     echo " 10) Stop Containers"
-    echo " 11) Exit"
+    echo " 11) Install z-lab Agent"
+    echo " 12) Exit"
     echo ""
-    read -p "Select option [1-11]: " choice
+    read -p "Select option [1-12]: " choice
 
     case "$choice" in
       1) ( cmd_create_template ) || echo -e "${RED}Operation failed or was aborted.${NC}" ;;
@@ -6080,12 +6359,13 @@ main_menu() {
       8) ( cmd_update_containers ) || echo -e "${RED}Operation failed or was aborted.${NC}" ;;
       9) cmd_update || echo -e "${RED}Operation failed or was aborted.${NC}" ;;
       10) ( cmd_stop_containers ) || echo -e "${RED}Operation failed or was aborted.${NC}" ;;
-      11|q|Q)
+      11) ( cmd_install_zlab_agent ) || echo -e "${RED}Operation failed or was aborted.${NC}" ;;
+      12|q|Q)
         echo "Goodbye!"
         exit 0
         ;;
       *)
-        echo -e "${RED}Invalid option. Please select 1-11.${NC}"
+        echo -e "${RED}Invalid option. Please select 1-12.${NC}"
         ;;
     esac
   done
@@ -6107,7 +6387,8 @@ case "${1:-}" in
   wizard)           cmd_full_wizard ;;
   update)              cmd_update ;;
   update-containers)   cmd_update_containers ;;
-  windows)             cmd_windows_tools ;;
+  install-zlab-agent)  cmd_install_zlab_agent ;;
+  windows)            cmd_windows_tools ;;
   _cleanup)            cmd_system_cleanup ;;
   --version|-v)        echo "proxmox-lab.sh v${VERSION}" ;;
   "")                  _startup_version_check; main_menu ;;
@@ -6125,6 +6406,7 @@ case "${1:-}" in
     echo "  status               Show container status"
     echo "  wizard               Full setup wizard"
     echo "  update-containers    Update packages on all running lab containers"
+    echo "  install-zlab-agent   Install and enroll the z-lab traffic-gen agent on running lab containers"
     echo "  update               Check for updates and self-patch"
     echo "  windows              Open Windows Tools submenu (tag VMs, cert, traffic, tasks)"
     echo "  --version            Show version"

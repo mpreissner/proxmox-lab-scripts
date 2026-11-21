@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.8.0] - 2026-11-21
+
+### Added
+- **z-lab traffic-gen agent** — a new **Install z-lab Agent** menu option (11) and `install-zlab-agent` command install and enroll the z-lab traffic-gen agent on every running lab-managed container, in parallel. z-lab then runs the traffic from its own catalog and schedules. The command asks for the z-lab URL and certificate pin (both saved to `~/.proxmox-lab.conf` as `ZLAB_URL` and `ZLAB_PIN`) and the enrollment token (hidden, never saved), all shown in z-lab under Settings → Traffic gen → Add agents. The node fetches `install.sh` over a connection checked against the pin, then sends the token and the script to each container on stdin, so neither appears on a command line. It optionally comments out the old `/opt/traffic-gen` cron jobs (off by default). Containers after the tenth start a few seconds apart to stay under z-lab's enrollment rate limit. Re-running it upgrades the agent.
+- **Create Template: bake in the z-lab agent** — an optional step 9 stores the z-lab URL, pin, token and pinned `install.sh` in the template with a first-boot hook (`/etc/local.d/zlab-agent.start`). Each clone enrolls under its own hostname on first boot, retrying for about 15 minutes, then deletes the token and the hook. The token stays in the template until it is recreated, so give it a sensible expiry and use count. When the template has the agent baked in, the Full Setup Wizard asks before installing the cron-based generator.
+
 ## [3.7.0] - 2026-07-19
 
 ### Added

@@ -2,6 +2,10 @@
 
 An interactive shell script for deploying and managing a Proxmox LXC container-based security testing lab. Automates the creation of a realistic multi-site enterprise network with simulated traffic patterns for testing security solutions like Zscaler, CASB, DLP, and UEBA systems.
 
+## What's New (v3.8.0)
+
+**z-lab traffic-gen agent** — the new **Install z-lab Agent** option (`install-zlab-agent`) installs and enrolls the z-lab agent on every running lab container, so z-lab drives the traffic from its own catalog and schedules. Create Template can also bake it in, so each clone enrolls on first boot. See [z-lab agent](#z-lab-agent).
+
 ## What's New (v3.7.0)
 
 **AI Guard prompt tests** — a new `ai-guard-test.ps1`, generated from a new `ai_guard_prompt` section in `lab-traffic.tsv`, sends prompts engineered to trip each AI Guard detector category (brand/reputation risk, code, finance advice, intellectual property, legal advice, PII, prompt injection, secrets, toxicity) to ChatGPT, Gemini, and Perplexity. It's prompt-only (no URLs, no file/image uploads) and installed on-demand via the new **Install AI Guard Prompt Test Script** option in Windows Tools for later manual, interactive runs — see [Windows Tools](#windows-tools).
@@ -61,7 +65,8 @@ A single interactive menu covering the full lab lifecycle.
 8. **Update Container Packages** — run `apk update && apk upgrade` on all running lab containers in parallel
 9. **Update Lab Script** — check GitHub for a newer version, show changelog, prompt to confirm, then self-patch the script in place and exit. Also downloads updated `setup-scheduled-tasks.ps1` and `lab-traffic.tsv` alongside the main script (`win-traffic.ps1` is generated from the TSV at push time and is not downloaded). On every interactive launch, the same check runs automatically before the menu appears.
 10. **Stop Containers** — stop all running lab-managed containers
-11. **Exit**
+11. **Install z-lab Agent** — install and enroll the z-lab traffic-gen agent on all running lab containers (see [z-lab agent](#z-lab-agent))
+12. **Exit**
 
 **Interactive menu:**
 ```bash
@@ -78,6 +83,7 @@ A single interactive menu covering the full lab lifecycle.
 ./proxmox-lab.sh status
 ./proxmox-lab.sh wizard
 ./proxmox-lab.sh update-containers
+./proxmox-lab.sh install-zlab-agent
 ./proxmox-lab.sh update
 ./proxmox-lab.sh windows
 ```
@@ -86,7 +92,7 @@ A single interactive menu covering the full lab lifecycle.
 
 On first run, the script prompts for all values as usual. After completing any command, it offers to save the answers to `~/.proxmox-lab.conf`. On every subsequent run those values pre-populate all prompts — press Enter to accept, or type a new value to override. The config file survives script updates. The Full Setup Wizard auto-saves once at the end without prompting at each step.
 
-Key saved values include node selection, network bridge, CT disk storage pool (`STORAGE`), image storage pool (`IMAGE_STORAGE`), VLAN IDs, CTID ranges, template ID, clone type (`CLONE_TYPE`), TLS certificate path, cron schedules, and `lab-traffic.tsv` path.
+Key saved values include node selection, network bridge, CT disk storage pool (`STORAGE`), image storage pool (`IMAGE_STORAGE`), VLAN IDs, CTID ranges, template ID, clone type (`CLONE_TYPE`), TLS certificate path, cron schedules, `lab-traffic.tsv` path, and the z-lab URL and pin (`ZLAB_URL`, `ZLAB_PIN`; the enrollment token is never saved).
 
 ---
 
@@ -221,6 +227,18 @@ pct exec 200 -- bash /opt/traffic-gen/security-tests/dlp-network.sh
 ```
 
 ---
+
+### z-lab agent
+
+z-lab can drive the lab traffic itself: it keeps the catalog (imported from `lab-traffic.tsv`) and schedules, and a small pull agent on each container runs what it is told. Agents need outbound HTTPS to z-lab only.
+
+1. In z-lab, open Settings → Traffic gen → **Add agents**. Copy the URL, certificate pin and enrollment token.
+2. Run `./proxmox-lab.sh install-zlab-agent` (or menu option 11) and paste them. The URL and pin are saved for next time; the token is not.
+3. Choose whether to comment out the old `/opt/traffic-gen` cron jobs. Leave them if you want both generators running while you compare.
+
+The node checks z-lab's certificate against the pin before it fetches `install.sh`, and the token goes to each container on stdin, not on a command line. Each agent enrolls under its hostname, which sets its profile (`hq1-fileserver1` → `fileserver`). Re-run the command to upgrade the agents.
+
+To have new containers enroll on their own, answer **y** at step 9 of Create Template. The token is then stored in the template until you recreate it, so create one with an expiry and use count that fit the deployment. A clone that cannot enroll on first boot logs to `/var/log/zlab-agent-bootstrap.log`; run `install-zlab-agent` to fix it.
 
 ## Default Configuration
 
