@@ -773,7 +773,7 @@ print(' '.join(pools))
   ZLAB_BAKED=false
   read -p "Bake the z-lab agent into the template? [y/N]: " input
   if [[ "$input" =~ ^[Yy]$ ]]; then
-    if _zlab_prompt; then
+    if _zlab_prompt no; then
       ZLAB_BAKED=true
     else
       echo -e "${YELLOW}Skipping the z-lab agent.${NC}"
@@ -878,7 +878,12 @@ print(' '.join(pools))
   fi
 
   if $ZLAB_BAKED; then
-    _zlab_bake_template "$NODE" "$TEMPLATE_ID"
+    if ! _zlab_bake_template "$NODE" "$TEMPLATE_ID"; then
+      rm -f "$_ZLAB_INSTALLER"
+      echo -e "${RED}Baking the z-lab agent failed; CT ${TEMPLATE_ID} is left running and not converted.${NC}"
+      echo "Fix it, or destroy CT ${TEMPLATE_ID} and run create-template again."
+      return 1
+    fi
     rm -f "$_ZLAB_INSTALLER"
     _ZLAB_TOKEN=""
   fi
@@ -4267,7 +4272,7 @@ try:
     c.request("GET", path)
     r = c.getresponse()
     body = r.read()
-except (OSError, http.client.HTTPException) as exc:
+except (OSError, ValueError, http.client.HTTPException) as exc:
     sys.exit(f"cannot reach {u.netloc}: {exc}")
 if r.status != 200:
     sys.exit(f"{path}: HTTP {r.status}")
@@ -4279,7 +4284,7 @@ PY
 # install.sh (pinned). Sets ZLAB_URL and ZLAB_PIN (saved to config) and
 # _ZLAB_TOKEN, _ZLAB_FLAGS, _ZLAB_INSTALLER (a temp file; never saved).
 _zlab_prompt() {
-  local input
+  local input ask_cron="${1:-yes}"
   echo "z-lab shows the URL, pin and token under Settings → Traffic gen → Add agents."
   while true; do
     read -p "z-lab URL (https://host:port) [${ZLAB_URL:-}]: " input
@@ -4317,6 +4322,7 @@ _zlab_prompt() {
   done
 
   _ZLAB_FLAGS=""
+  [ "$ask_cron" = "yes" ] || return 0
   echo ""
   echo "Containers set up by 'install-traffic' run the old generator from cron."
   read -p "Comment out those /opt/traffic-gen cron jobs so only z-lab drives traffic? [y/N]: " input
@@ -4325,19 +4331,27 @@ _zlab_prompt() {
 }
 
 # Runs inside a container. stdin: the token on line 1, then install.sh.
+# $4 = "force" re-enrolls a container that already has an agent (that makes a
+# new agent in z-lab; the old one stays listed as offline).
 _ZLAB_REMOTE='set -e
+if [ -f /var/lib/zlab-agent/state.json ] && [ "$4" != force ]; then
+  echo "already enrolled; skipped"
+  exit 0
+fi
 IFS= read -r ZLAB_TOKEN
 export ZLAB_TOKEN
 f=$(mktemp)
 trap "rm -f \"$f\"" EXIT
 cat > "$f"
-sh "$f" --zlab "$1" --pin "$2" ${3:+"$3"}'
+sh "$f" --zlab "$1" --pin "$2" ${3:+"$3"}
+# Enrolled: drop any first-boot hook baked into the template.
+rm -f /etc/zlab-agent/bootstrap /etc/zlab-agent/install.sh /etc/local.d/zlab-agent.start'
 
 cmd_install_zlab_agent() {
   _load_config
   section_header "Install z-lab Traffic-Gen Agent"
   echo "Installs the z-lab agent on every running lab container and enrolls it."
-  echo "Re-running upgrades the agent and enrolls it again."
+  echo "Containers that already have an agent are skipped unless you choose to re-enroll."
   echo ""
 
   echo "Scanning for containers (cluster-wide)..."
@@ -4368,6 +4382,12 @@ cmd_install_zlab_agent() {
   echo ""
 
   _zlab_prompt || return 1
+  local force=""
+  echo ""
+  echo "Re-enrolling makes a new agent in z-lab (the old one stays, offline) and"
+  echo "uses a token use per container. Only do it for agents you have revoked."
+  read -p "Re-enroll containers that already have an agent? [y/N]: " input
+  [[ "$input" =~ ^[Yy]$ ]] && force="force"
   if [ ${#RUNNING_CTIDS[@]} -gt 50 ]; then
     echo -e "${YELLOW}Note: z-lab's default token allows 50 uses; check yours covers ${#RUNNING_CTIDS[@]}.${NC}"
   fi
@@ -4381,8 +4401,8 @@ cmd_install_zlab_agent() {
   _maybe_save_config
 
   echo ""
-  echo "Installing (parallel; z-lab allows 10 enrollments at once per source IP,"
-  echo "so containers past the 10th start a few seconds apart)..."
+  echo "Installing (parallel; z-lab rate-limits enrollments per source IP, so"
+  echo "containers past the 8th start 7 seconds apart)..."
   echo ""
 
   declare -a PIDS=() CTID_ORDER=()
@@ -4399,7 +4419,7 @@ cmd_install_zlab_agent() {
       if [ $delay -gt 0 ]; then sleep $delay; fi
       { printf '%s\n' "$_ZLAB_TOKEN"; cat "$_ZLAB_INSTALLER"; } | \
         run_on_node "${CT_NODE_MAP[$ctid]}" pct exec "$ctid" -- \
-          sh -c "$_ZLAB_REMOTE" sh "$ZLAB_URL" "$ZLAB_PIN" "$_ZLAB_FLAGS"
+          sh -c "$_ZLAB_REMOTE" sh "$ZLAB_URL" "$ZLAB_PIN" "$_ZLAB_FLAGS" "$force"
     ) > "$local_tmpf" 2>&1 &
     PIDS+=($!)
     idx=$((idx + 1))
@@ -4412,7 +4432,7 @@ cmd_install_zlab_agent() {
     tmpf="${TMPFILES[$ctid]}"
     if wait "${PIDS[$i]}" 2>/dev/null; then
       echo -e "${GREEN}✓ CT ${ctid} (${name})${NC}"
-      grep -i "enrolled as\|note:\|commented out" "$tmpf" | sed 's/^/    /' || true
+      grep -i "enrolled as\|note:\|commented out\|skipped" "$tmpf" | sed 's/^/    /' || true
       ((++SUCCESS))
     else
       echo -e "${RED}✗ CT ${ctid} (${name})${NC}"
@@ -4462,6 +4482,9 @@ fi
         < /etc/zlab-agent/bootstrap
     n=0
     while [ $n -lt 20 ]; do
+        # Enrolled already (an earlier try got that far, or install-zlab-agent
+        # ran): stop, or every retry would enroll a new agent.
+        [ -f /var/lib/zlab-agent/state.json ] && break
         if ZLAB_TOKEN="$token" sh /etc/zlab-agent/install.sh --zlab "$url" --pin "$pin" $flags
         then
             rm -f /etc/zlab-agent/bootstrap /etc/zlab-agent/install.sh \
@@ -4471,12 +4494,14 @@ fi
         n=$((n + 1))
         sleep $((30 + $(od -An -N1 -tu1 /dev/urandom) % 30))
     done
-    echo "giving up; run proxmox-lab.sh install-zlab-agent"
+    [ -f /var/lib/zlab-agent/state.json ] || echo "giving up; run proxmox-lab.sh install-zlab-agent"
+    rm -f /etc/zlab-agent/bootstrap /etc/zlab-agent/install.sh /etc/local.d/zlab-agent.start
 ) >> /var/log/zlab-agent-bootstrap.log 2>&1 &
 EOF
       chmod 0755 /etc/local.d/zlab-agent.start
-      rc-update add local default >/dev/null
-    '
+      rc-update add local default >/dev/null 2>&1 || true
+      rc-update show default | grep -qw local
+    ' || return 1
   echo -e "${GREEN}✓ Clones will enroll with z-lab on first boot${NC}"
 }
 

@@ -236,7 +236,7 @@ z-lab can drive the lab traffic itself: it keeps the catalog (imported from `lab
 2. Run `./proxmox-lab.sh install-zlab-agent` (or menu option 11) and paste them. The URL and pin are saved for next time; the token is not.
 3. Choose whether to comment out the old `/opt/traffic-gen` cron jobs. Leave them if you want both generators running while you compare.
 
-The node checks z-lab's certificate against the pin before it fetches `install.sh`, and the token goes to each container on stdin, not on a command line. Each agent enrolls under its hostname, which sets its profile (`hq1-fileserver1` → `fileserver`). Re-run the command to upgrade the agents.
+The node checks z-lab's certificate against the pin before it fetches `install.sh`, and the token goes to each container on stdin, not on a command line. Each agent enrolls under its hostname, which sets its profile (`hq1-fileserver1` → `fileserver`). The command also asks whether to comment out the old cron jobs and whether to re-enroll containers that already have an agent (by default they are skipped; re-enrolling makes a new agent and leaves the old one listed as offline).
 
 To have new containers enroll on their own, answer **y** at step 9 of Create Template. The token is then stored in the template until you recreate it, so create one with an expiry and use count that fit the deployment. A clone that cannot enroll on first boot logs to `/var/log/zlab-agent-bootstrap.log`; run `install-zlab-agent` to fix it.
 
