@@ -242,7 +242,7 @@ z-lab can drive the lab traffic itself: it keeps the catalog (imported from `lab
 
 The node checks z-lab's certificate against the pin before it fetches `install.sh`, and the token goes to each container on stdin, not on a command line. Each agent enrolls under its hostname, which sets its profile (`hq1-fileserver1` → `fileserver`). The command also asks whether to comment out the old cron jobs and whether to re-enroll containers that already have an agent (re-enrolling makes a new agent and leaves the old one listed as offline).
 
-Run it again to upgrade: containers that already have an agent are upgraded in place (new agent and launcher, and the pin you enter replaces the saved one, which fixes a stale pin) without using the token. Leave the token empty to only upgrade; containers without an agent are then skipped. The in-place upgrade needs the same z-lab URL the agent enrolled with; for a different URL, re-enroll.
+Run it again to upgrade: containers that already have an agent are upgraded in place (new agent and launcher, and the pin you enter replaces the saved one, which fixes a stale pin) without using the token. Leave the token empty to only upgrade; containers without an agent are then skipped. The in-place upgrade needs the same z-lab URL the agent enrolled with and an agent that isn't revoked. Otherwise that container fails (it never re-enrolls without being asked); re-enroll it instead.
 
 To have new containers enroll on their own, answer **y** at step 9 of Create Template. The token is then stored in the template until you recreate it, so create one with an expiry and use count that fit the deployment. A clone that cannot enroll on first boot logs to `/var/log/zlab-agent-bootstrap.log`; run `install-zlab-agent` to fix it.
 

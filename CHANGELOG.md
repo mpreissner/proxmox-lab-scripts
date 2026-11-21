@@ -8,7 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [3.9.0] - 2026-11-21
 
 ### Changed
-- **z-lab agent upgrades** — `install-zlab-agent` upgrades containers that already have an agent in place instead of skipping them. z-lab's `install.sh` replaces the agent and launcher, rewrites the saved pin to the one entered, and uses no token. The token is now optional unless you re-enroll: leave it empty to only upgrade, and containers without an agent are skipped and counted as such. Re-enrolling is still an explicit opt-in, is asked before the token, and passes `--reenroll`. The in-place upgrade needs the z-lab URL the agent enrolled with; with a different URL, `install.sh` asks for a token. The template's first-boot enrollment is unchanged.
+- **z-lab agent upgrades** — `install-zlab-agent` upgrades containers that already have an agent in place instead of skipping them. z-lab's `install.sh` replaces the agent and launcher, rewrites the saved pin to the one entered, and uses no token. The token is now optional unless you re-enroll: leave it empty to only upgrade, and containers without an agent are skipped and counted as such. Re-enrolling is still an explicit opt-in, is asked before the token, and passes `--reenroll`. Containers that already have an agent never get the token unless you re-enroll, so they cannot become a new agent by accident: if the in-place upgrade does not apply (a different z-lab URL from the one the agent enrolled with, or a revoked agent), that container fails and you re-enroll it. The template's first-boot enrollment is unchanged.
 
 ## [3.8.0] - 2026-11-21
 

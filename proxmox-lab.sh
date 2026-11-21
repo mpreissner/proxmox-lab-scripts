@@ -4338,12 +4338,18 @@ _zlab_prompt() {
 
 # Runs inside a container. stdin: the token on line 1 (may be empty), then
 # install.sh. An enrolled container is upgraded in place by install.sh with no
-# token (and its pin rewritten). $4 = "force" passes --reenroll instead, which
-# makes a new agent in z-lab (the old one stays listed as offline).
+# token (and its pin rewritten); it never gets the token, so it cannot re-enroll
+# by accident (revoked, URL mismatch): install.sh fails instead. $4 = "force"
+# passes the token and --reenroll, which makes a new agent in z-lab (the old
+# one stays listed as offline).
 _ZLAB_REMOTE='set -e
 IFS= read -r ZLAB_TOKEN || true
 re=""
-[ "$4" = force ] && re="--reenroll"
+if [ "$4" = force ]; then
+  re="--reenroll"
+elif [ -f /var/lib/zlab-agent/state.json ]; then
+  ZLAB_TOKEN=""
+fi
 if [ -z "$ZLAB_TOKEN" ] && [ ! -f /var/lib/zlab-agent/state.json ]; then
   echo "not enrolled and no token given; skipped"
   exit 0
